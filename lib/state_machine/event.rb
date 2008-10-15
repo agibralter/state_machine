@@ -76,6 +76,14 @@ module PluginAWeek #:nodoc:
         run(record, true) || raise(PluginAWeek::StateMachine::InvalidTransition, "Cannot transition via :#{name} from \"#{record.send(machine.attribute)}\"")
       end
       
+      def fire_without_save(record)
+        run(record, false, false) || false
+      end
+      
+      def fire_without_save!(record)
+        run(record, true, false) || raise(PluginAWeek::StateMachine::InvalidTransition, "Cannot transition via :#{name} from \"#{record.send(machine.attribute)}\"")
+      end
+      
       private
         # Add the various instance methods that can transition the record using
         # the current event
@@ -84,8 +92,20 @@ module PluginAWeek #:nodoc:
           name = self.name
           
           owner_class.class_eval do
-            define_method(name) {self.class.state_machines[attribute].events[name].fire(self)}
-            define_method("#{name}!") {self.class.state_machines[attribute].events[name].fire!(self)}
+            define_method(name) do |*args|
+              if args[0] === false
+                self.class.state_machines[attribute].events[name].fire_without_save(self)
+              else
+                self.class.state_machines[attribute].events[name].fire(self)
+              end
+            end
+            define_method("#{name}!") do |*args|
+              if args[0] === false
+                self.class.state_machines[attribute].events[name].fire_without_save!(self)
+              else
+                self.class.state_machines[attribute].events[name].fire!(self)
+              end
+            end
             define_method("can_#{name}?") {self.class.state_machines[attribute].events[name].can_fire?(self)}
           end
         end
@@ -94,13 +114,13 @@ module PluginAWeek #:nodoc:
         # 
         # +bang+ indicates whether +perform+ or <tt>perform!</tt> will be
         # invoked on transitions.
-        def run(record, bang)
+        def run(record, bang, do_save = true)
           result = false
           
           record.class.transaction do
             transitions.each do |transition|
               if transition.can_perform?(record)
-                result = bang ? transition.perform!(record) : transition.perform(record)
+                result = bang ? transition.perform!(record, do_save) : transition.perform(record, do_save)
                 break
               end
             end

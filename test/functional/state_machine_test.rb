@@ -41,6 +41,11 @@ class VehicleUnsavedTest < Test::Unit::TestCase
     assert !@vehicle.new_record?
   end
   
+  def test_should_not_be_saved_after_successful_event_without_save
+    @vehicle.ignite(false)
+    assert @vehicle.new_record?
+  end
+  
   def test_should_not_allow_idle
     assert !@vehicle.idle
   end

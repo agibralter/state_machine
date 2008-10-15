@@ -111,8 +111,8 @@ module PluginAWeek #:nodoc:
       # 
       # *Note* that the caller should check <tt>matches?</tt> before being
       # called.  This will *not* check whether transition should be performed.
-      def perform(record)
-        run(record, false)
+      def perform(record, do_save = true)
+        run(record, false, do_save)
       end
       
       # Runs the actual transition and any before/after callbacks associated
@@ -121,8 +121,8 @@ module PluginAWeek #:nodoc:
       # Any errors during validation or saving will be raised.  If any +before+
       # callbacks fail, a PluginAWeek::StateMachine::InvalidTransition error
       # will be raised.
-      def perform!(record)
-        run(record, true) || raise(PluginAWeek::StateMachine::InvalidTransition, "Could not transition via :#{event.name} from #{record.send(machine.attribute).inspect} to #{@options[:to].inspect}")
+      def perform!(record, do_save = true)
+        run(record, true, do_save) || raise(PluginAWeek::StateMachine::InvalidTransition, "Could not transition via :#{event.name} from #{record.send(machine.attribute).inspect} to #{@options[:to].inspect}")
       end
       
       private
@@ -166,12 +166,12 @@ module PluginAWeek #:nodoc:
         # Performs the actual transition, invoking before/after callbacks in the
         # process.  If either the before callbacks fail or the actual save fails,
         # then this transition will fail.
-        def run(record, bang)
+        def run(record, bang, do_save = true)
           from_state = record.send(machine.attribute)
           
           # Stop the transition if any before callbacks fail
           return false if invoke_callbacks(record, :before, from_state) == false
-          result = update_state(record, bang)
+          result = update_state(record, bang, do_save)
           
           # Always invoke after callbacks regardless of whether the update failed
           invoke_callbacks(record, :after, from_state)
@@ -182,9 +182,13 @@ module PluginAWeek #:nodoc:
         # Updates the record's attribute to the state represented by this
         # transition.  Even if the transition is a loopback, the record will
         # still be saved.
-        def update_state(record, bang)
+        def update_state(record, bang, do_save = true)
           record.send("#{machine.attribute}=", @options[:to])
-          bang ? record.save! : record.save
+          if do_save
+            bang ? record.save! : record.save
+          else
+            true
+          end
         end
         
         # Runs the callbacks of the given type for this transition
