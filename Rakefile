@@ -5,9 +5,9 @@ require 'rake/contrib/sshpublisher'
 
 spec = Gem::Specification.new do |s|
   s.name              = 'state_machine'
-  s.version           = '0.3.0'
+  s.version           = '0.3.1'
   s.platform          = Gem::Platform::RUBY
-  s.summary           = 'Adds support for creating state machines for attributes within a model'
+  s.summary           = 'Adds support for creating state machines for attributes on any Ruby class'
   
   s.files             = FileList['{lib,test}/**/*'] + %w(CHANGELOG.rdoc init.rb LICENSE Rakefile README.rdoc) - FileList['test/app_root/{log,log/*,script,script/*}']
   s.require_path      = 'lib'
@@ -84,5 +84,31 @@ task :release => [:gem, :package] do
     puts "Releasing #{File.basename(file)}..."
     
     ruby_forge.add_release(spec.rubyforge_project, spec.name, spec.version, file)
+  end
+end
+
+namespace :state_machine do
+  desc 'Draws a set of state machines using GraphViz. Target files to load with FILE=x,y,z; Machine class with CLASS=x,y,z; Font name with FONT=x; Image format with FORMAT=x'
+  task :draw do
+    # Load the library
+    $:.unshift(File.dirname(__FILE__) + '/lib')
+    require 'state_machine'
+    
+    # Build drawing options
+    options = {}
+    options[:file] = ENV['FILE'] if ENV['FILE']
+    options[:path] = ENV['TARGET'] if ENV['TARGET']
+    options[:format] = ENV['FORMAT'] if ENV['FORMAT']
+    options[:font] = ENV['FONT'] if ENV['FONT']
+    
+    PluginAWeek::StateMachine::Machine.draw(ENV['CLASS'], options)
+  end
+  
+  namespace :draw do
+    desc 'Draws a set of state machines using GraphViz for a Ruby on Rails application.  Target class with CLASS=x,y,z; Font name with FONT=x; Image format with FORMAT=x'
+    task :rails => [:environment, 'state_machine:draw']
+    
+    desc 'Draws a set of state machines using GraphViz for a Merb application.  Target class with CLASS=x,y,z; Font name with FONT=x; Image format with FORMAT=x'
+    task :merb => [:merb_env, 'state_machine:draw']
   end
 end

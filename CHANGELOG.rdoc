@@ -1,5 +1,26 @@
 == master
 
+* Add rake tasks for generating graphviz files for state machines [Nate Murray]
+* Fix initial state not being included in list of known states
+* Add other_states directive for defining additional states not referenced in transitions or callbacks [Pete Forde]
+* Add next_#{event}_transition for getting the next transition that would be performed if the event were invoked
+* Add the ability to override the pluralized name of an attribute for creating scopes
+* Add the ability to halt callback chains by: throw :halt
+* Add support for dynamic to states in transitions (e.g. :to => lambda {Time.now})
+* Add support for using real blocks in before_transition/after_transition calls instead of using the :do option
+* Add DataMapper support
+* Include states referenced in transition callbacks in the list of a machine's known states
+* Only generate the known states for a machine on demand, rather than calculating beforehand
+* Add the ability to skip state change actions during a transition (e.g. vehicle.ignite(false))
+* Add the ability for the state change action (e.g. +save+ for ActiveRecord) to be configurable
+* Allow state machines to be defined on *any* Ruby class, not just ActiveRecord (removes all external dependencies)
+* Refactor transitions, guards, and callbacks for better organization/design
+* Use a class containing the transition context in callbacks, rather than an ordered list of each individual attribute
+* Add without_#{attribute} named scopes (opposite of the existing with_#{attribute} named scopes) [Sean O'Brien]
+
+== 0.3.1 / 2008-10-26
+
+* Fix the initial state not getting set when the state attribute is mass-assigned but protected
 * Change how the base module is included to prevent namespacing conflicts
 
 == 0.3.0 / 2008-09-07
