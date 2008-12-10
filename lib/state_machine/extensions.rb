@@ -69,7 +69,7 @@ module PluginAWeek #:nodoc:
         self.class.state_machines.each do |attribute, machine|
           # Set the initial value of the machine's attribute unless it already
           # exists (which must mean the defaults are being skipped)
-          send("#{attribute}=", machine.initial_state(self)) unless send(attribute)
+          send("#{attribute}=", machine.initial_state(self)) if send(attribute).empty?
         end
       end
     end
