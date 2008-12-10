@@ -40,7 +40,7 @@ module PluginAWeek #:nodoc:
       # Gets a list of all of the states known to this event.  This will look at
       # each guard's known states are compile a union of those states.
       def known_states
-        @known_states ||= guards.inject([]) {|states, guard| states.concat(guard.known_states)}.uniq
+        @known_states ||= guards.inject([]) {|states, guard| states |= guard.known_states}
       end
       
       # Creates a new transition that will be evaluated when the event is fired.
@@ -142,8 +142,8 @@ module PluginAWeek #:nodoc:
             end
             
             # Fires the event, raising an exception if it fails to transition
-            define_method("#{name}!") do
-              send(name) || raise(PluginAWeek::StateMachine::InvalidTransition, "Cannot transition via :#{name} from #{send(attribute).inspect}")
+            define_method("#{name}!") do |*args|
+              send(name, *args) || raise(PluginAWeek::StateMachine::InvalidTransition, "Cannot transition via :#{name} from #{send(attribute).inspect}")
             end
           end
         end

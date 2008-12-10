@@ -651,6 +651,31 @@ class MachineWithConflictingPostdefinedAndSuperclassInitializeTest < Test::Unit:
   end
 end
 
+class MachineWithConflictingMethodAddedTest < Test::Unit::TestCase
+  def setup
+    @klass = Class.new do
+      class << self
+        attr_reader :called_method_added
+        
+        def method_added(method)
+          super
+          @called_method_added = true
+        end
+      end
+    end
+    @machine = PluginAWeek::StateMachine::Machine.new(@klass, :initial => 'off')
+    @object = @klass.new
+  end
+  
+  def test_should_not_override_existing_method
+    assert @klass.called_method_added
+  end
+  
+  def test_should_still_initialize_state
+    assert_equal 'off', @object.state
+  end
+end
+
 class MachineWithExistingAttributeValue < Test::Unit::TestCase
   def setup
     @klass = Class.new do
@@ -804,7 +829,7 @@ end
 class MachineWithOtherStates < Test::Unit::TestCase
   def setup
     @klass = Class.new
-    @machine = PluginAWeek::StateMachine::Machine.new(@klass)
+    @machine = PluginAWeek::StateMachine::Machine.new(@klass, :initial => 'on')
     @machine.other_states('on', 'off')
   end
   
@@ -832,13 +857,19 @@ end
 class MachineWithExistingMachinesOnOwnerClassTest < Test::Unit::TestCase
   def setup
     @klass = Class.new
-    @machine = PluginAWeek::StateMachine::Machine.new(@klass)
-    @second_machine = PluginAWeek::StateMachine::Machine.new(@klass, 'status')
+    @machine = PluginAWeek::StateMachine::Machine.new(@klass, :initial => 'off')
+    @second_machine = PluginAWeek::StateMachine::Machine.new(@klass, 'status', :initial => 'active')
+    @object = @klass.new
   end
   
   def test_should_track_each_state_machine
     expected = {'state' => @machine, 'status' => @second_machine}
     assert_equal expected, @klass.state_machines
+  end
+  
+  def test_should_initialize_state_for_both_machines
+    assert_equal 'off', @object.state
+    assert_equal 'active', @object.status
   end
 end
 
