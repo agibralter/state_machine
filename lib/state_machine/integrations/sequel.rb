@@ -1,19 +1,13 @@
 module StateMachine
   module Integrations #:nodoc:
-    # Adds support for integrating state machines with DataMapper resources.
+    # Adds support for integrating state machines with Sequel models.
     # 
     # == Examples
     # 
     # Below is an example of a simple state machine defined within a
-    # DataMapper resource:
+    # Sequel model:
     # 
-    #   class Vehicle
-    #     include DataMapper::Resource
-    #     
-    #     property :id, Serial
-    #     property :name, String
-    #     property :state, String
-    #     
+    #   class Vehicle < Sequel::Model
     #     state_machine :initial => 'parked' do
     #       event :ignite do
     #         transition :to => 'idling', :from => 'parked'
@@ -30,14 +24,14 @@ module StateMachine
     # is the +save+ action.  This will cause the resource to save the changes
     # made to the state machine's attribute.  *Note* that if any other changes
     # were made to the resource prior to transition, then those changes will
-    # be saved as well.
+    # be made as well.
     # 
     # For example,
     # 
     #   vehicle = Vehicle.create          # => #<Vehicle id=1 name=nil state=nil>
     #   vehicle.name = 'Ford Explorer'
     #   vehicle.ignite                    # => true
-    #   vehicle.reload                    # => #<Vehicle id=1 name="Ford Explorer" state="idling">
+    #   vehicle.refresh                   # => #<Vehicle id=1 name="Ford Explorer" state="idling">
     # 
     # == Transactions
     # 
@@ -47,23 +41,19 @@ module StateMachine
     # 
     # For example,
     # 
-    #   class Message
-    #     include DataMapper::Resource
-    #     
-    #     property :id, Serial
-    #     property :content, String
+    #   class Message < Sequel::Model
     #   end
     #   
     #   Vehicle.state_machine do
     #     before_transition do |transition|
     #       Message.create(:content => transition.inspect)
-    #       throw :halt
+    #       false
     #     end
     #   end
     #   
     #   vehicle = Vehicle.create      # => #<Vehicle id=1 name=nil state=nil>
     #   vehicle.ignite                # => false
-    #   Message.all.count             # => 0
+    #   Message.count                 # => 0
     # 
     # *Note* that only before callbacks that halt the callback chain and
     # failed attempts to save the record will result in the transaction being
@@ -79,45 +69,34 @@ module StateMachine
     # These named scopes are the functional equivalent of the following
     # definitions:
     # 
-    #   class Vehicle
-    #     include DataMapper::Resource
-    #     
-    #     property :id, Serial
-    #     property :state, String
-    #     
+    #   class Vehicle < Sequel::Model
     #     class << self
     #       def with_states(*values)
-    #         all(:state => values.flatten)
+    #         filter(:state => values)
     #       end
     #       alias_method :with_state, :with_states
     #       
     #       def without_states(*values)
-    #         all(:state.not => values.flatten)
+    #         filter(~{:state => values})
     #       end
     #       alias_method :without_state, :without_states
     #     end
     #   end
     # 
-    # Because of the way scopes work in DataMapper, they can be chained like
-    # so:
+    # Because of the way scopes work in Sequel, they can be chained like so:
     # 
-    #   Vehicle.with_state('parked').all(:order => [:id.desc])
+    #   Vehicle.with_state('parked').with_state('idling').order(:id.desc)
     # 
-    # == Callbacks / Observers
+    # == Callbacks
     # 
-    # All before/after transition callbacks defined for DataMapper resources
-    # behave in the same way that other DataMapper hooks behave.  Rather than
+    # All before/after transition callbacks defined for Sequel resources
+    # behave in the same way that other Sequel hooks behave.  Rather than
     # passing in the record as an argument to the callback, the callback is
     # instead bound to the object and evaluated within its context.
     # 
     # For example,
     # 
-    #   class Vehicle
-    #     include DataMapper::Resource
-    #     
-    #     property :id, Serial
-    #     property :state, String
-    #     
+    #   class Vehicle < Sequel::Model
     #     state_machine :initial => 'parked' do
     #       before_transition :to => 'idling' do
     #         put_on_seatbelt
@@ -139,31 +118,22 @@ module StateMachine
     # 
     # Note, also, that the transition can be accessed by simply defining
     # additional arguments in the callback block.
-    # 
-    # In addition to support for DataMapper-like hooks, there is additional
-    # support for DataMapper observers.  See StateMachine::Integrations::DataMapper::Observer
-    # for more information.
-    module DataMapper
+    module Sequel
       # Should this integration be used for state machines in the given class?
-      # Classes that include DataMapper::Resource will automatically use the
-      # DataMapper integration.
+      # Classes that include Sequel::Model will automatically use the Sequel
+      # integration.
       def self.matches?(klass)
-        defined?(::DataMapper::Resource) && klass <= ::DataMapper::Resource
-      end
-      
-      # Loads additional files specific to DataMapper
-      def self.extended(base) #:nodoc:
-        require 'state_machine/integrations/data_mapper/observer'
+        defined?(::Sequel::Model) && klass <= ::Sequel::Model
       end
       
       # Runs a new database transaction, rolling back any changes if the
       # yielded block fails (i.e. returns false).
       def within_transaction(object)
-        object.class.transaction {|t| t.rollback unless yield}
+        object.db.transaction {raise ::Sequel::Error::Rollback unless yield}
       end
       
       protected
-        # Sets the default action for all DataMapper state machines to +save+
+        # Sets the default action for all Sequel state machines to +save+
         def default_action
           :save
         end
@@ -173,7 +143,7 @@ module StateMachine
         def define_with_scope(name)
           attribute = self.attribute
           (class << owner_class; self; end).class_eval do
-            define_method(name) {|*values| all(attribute => values.flatten)}
+            define_method(name) {|*values| filter(attribute.to_sym => values.flatten)}
           end
         end
         
@@ -182,15 +152,16 @@ module StateMachine
         def define_without_scope(name)
           attribute = self.attribute
           (class << owner_class; self; end).class_eval do
-            define_method(name) {|*values| all(attribute.to_sym.not => values.flatten)}
+            define_method(name) {|*values| filter(~{attribute.to_sym => values.flatten})}
           end
         end
         
         # Creates a new callback in the callback chain, always ensuring that
         # it's configured to bind to the object as this is the convention for
-        # DataMapper/Extlib callbacks
+        # Sequel callbacks
         def add_callback(type, options, &block)
           options[:bind_to_object] = true
+          options[:terminator] = @terminator ||= lambda {|result| result == false}
           super
         end
     end

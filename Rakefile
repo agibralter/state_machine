@@ -5,11 +5,11 @@ require 'rake/contrib/sshpublisher'
 
 spec = Gem::Specification.new do |s|
   s.name              = 'state_machine'
-  s.version           = '0.3.1'
+  s.version           = '0.4.1'
   s.platform          = Gem::Platform::RUBY
   s.summary           = 'Adds support for creating state machines for attributes on any Ruby class'
   
-  s.files             = FileList['{lib,test}/**/*'] + %w(CHANGELOG.rdoc init.rb LICENSE Rakefile README.rdoc) - FileList['test/app_root/{log,log/*,script,script/*}']
+  s.files             = FileList['{examples,lib,test}/**/*'] + %w(CHANGELOG.rdoc init.rb LICENSE Rakefile README.rdoc) - FileList['test/app_root/{log,log/*,script,script/*}']
   s.require_path      = 'lib'
   s.has_rdoc          = true
   s.test_files        = Dir['test/**/*_test.rb']
@@ -101,7 +101,7 @@ namespace :state_machine do
     options[:format] = ENV['FORMAT'] if ENV['FORMAT']
     options[:font] = ENV['FONT'] if ENV['FONT']
     
-    PluginAWeek::StateMachine::Machine.draw(ENV['CLASS'], options)
+    StateMachine::Machine.draw(ENV['CLASS'], options)
   end
   
   namespace :draw do
