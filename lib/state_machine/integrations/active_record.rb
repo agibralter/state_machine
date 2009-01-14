@@ -8,9 +8,9 @@ module StateMachine
     # ActiveRecord model:
     # 
     #   class Vehicle < ActiveRecord::Base
-    #     state_machine :initial => 'parked' do
+    #     state_machine :initial => :parked do
     #       event :ignite do
-    #         transition :to => 'idling', :from => 'parked'
+    #         transition :to => :idling, :from => :parked
     #       end
     #     end
     #   end
@@ -28,7 +28,7 @@ module StateMachine
     # 
     # For example,
     # 
-    #   vehicle = Vehicle.create          # => #<Vehicle id: 1, name: nil, state: nil>
+    #   vehicle = Vehicle.create          # => #<Vehicle id: 1, name: nil, state: "parked">
     #   vehicle.name = 'Ford Explorer'
     #   vehicle.ignite                    # => true
     #   vehicle.reload                    # => #<Vehicle id: 1, name: "Ford Explorer", state: "idling">
@@ -51,7 +51,7 @@ module StateMachine
     #     end
     #   end
     #   
-    #   vehicle = Vehicle.create      # => #<Vehicle id: 1, name: nil, state: nil>
+    #   vehicle = Vehicle.create      # => #<Vehicle id: 1, name: nil, state: "parked">
     #   vehicle.ignite                # => false
     #   Message.count                 # => 0
     # 
@@ -66,21 +66,24 @@ module StateMachine
     # scopes are defined on the model for finding records with or without a
     # particular set of states.
     # 
-    # These named scopes are the functional equivalent of the following
-    # definitions:
+    # These named scopes are essentially the functional equivalent of the
+    # following definitions:
     # 
     #   class Vehicle < ActiveRecord::Base
-    #     named_scope :with_states, lambda {|*values| {:conditions => {:state => values.flatten}}}
+    #     named_scope :with_states, lambda {|*states| {:conditions => {:state => states}}}
     #     # with_states also aliased to with_state
     #     
-    #     named_scope :without_states, lambda {|*values| {:conditions => ['state NOT IN (?)', values.flatten]}}
+    #     named_scope :without_states, lambda {|*states| {:conditions => ['state NOT IN (?)', states]}}
     #     # without_states also aliased to without_state
     #   end
+    # 
+    # *Note*, however, that the states are converted to their stored values
+    # before being passed into the query.
     # 
     # Because of the way named scopes work in ActiveRecord, they can be
     # chained like so:
     # 
-    #   Vehicle.with_state('parked').all(:order => 'id DESC')
+    #   Vehicle.with_state(:parked).all(:order => 'id DESC')
     # 
     # == Callbacks
     # 
@@ -91,8 +94,8 @@ module StateMachine
     # For example,
     # 
     #   class Vehicle < ActiveRecord::Base
-    #     state_machine :initial => 'parked' do
-    #       before_transition :to => 'idling' do |vehicle|
+    #     state_machine :initial => :parked do
+    #       before_transition :to => :idling do |vehicle|
     #         vehicle.put_on_seatbelt
     #       end
     #       
@@ -101,7 +104,7 @@ module StateMachine
     #       end
     #       
     #       event :ignite do
-    #         transition :to => 'idling', :from => 'parked'
+    #         transition :to => :idling, :from => :parked
     #       end
     #     end
     #     
@@ -164,6 +167,11 @@ module StateMachine
         defined?(::ActiveRecord::Base) && klass <= ::ActiveRecord::Base
       end
       
+      # Loads additional files specific to ActiveRecord
+      def self.extended(base) #:nodoc:
+        require 'state_machine/integrations/active_record/observer'
+      end
+      
       # Runs a new database transaction, rolling back any changes by raising
       # an ActiveRecord::Rollback exception if the yielded block fails
       # (i.e. returns false).
@@ -188,24 +196,23 @@ module StateMachine
         # Forces all attribute methods to be generated for the model so that
         # the reader/writer methods for the attribute are available
         def define_attribute_accessor
-          if owner_class.table_exists?
+          # If an exception is raised while trying to access the connection, then
+          # the assumption is that there's an issue with the database (most likely
+          # doesn't exist yet), so we won't be able to check the table properties
+          connection_exists = begin; owner_class.connection; true; rescue Exception; false; end
+          
+          if connection_exists && owner_class.table_exists?
             owner_class.define_attribute_methods
             
             # Support attribute predicate for ActiveRecord columns
-            if owner_class.column_names.include?(attribute)
+            if owner_class.column_names.include?(attribute.to_s)
               attribute = self.attribute
               
               owner_class.class_eval do
+                # Checks whether the current state is a given value.  If there
+                # are no arguments, then this checks for the presence of the attribute.
                 define_method("#{attribute}?") do |*args|
-                  if args.empty?
-                    # No arguments: querying for presence of the attribute
-                    super
-                  else
-                    # Arguments: querying for the attribute's current value
-                    state = args.first
-                    raise ArgumentError, "#{state.inspect} is not a known #{attribute} value" unless self.class.state_machines[attribute].states.include?(state)
-                    send(attribute) == state
-                  end
+                  args.empty? ? super(*args) : self.class.state_machines[attribute].state?(self, *args)
                 end
               end
             end
@@ -214,18 +221,18 @@ module StateMachine
           super
         end
         
-        # Defines a scope for finding records *with* a particular value or
-        # values for the attribute
-        def define_with_scope(name)
+        # Creates a scope for finding records *with* a particular state or
+        # states for the attribute
+        def create_with_scope(name)
           attribute = self.attribute
-          owner_class.named_scope name.to_sym, lambda {|*values| {:conditions => {attribute => values.flatten}}}
+          define_scope(name, lambda {|values| {:conditions => {attribute => values}}})
         end
         
-        # Defines a scope for finding records *without* a particular value or
-        # values for the attribute
-        def define_without_scope(name)
+        # Creates a scope for finding records *without* a particular state or
+        # states for the attribute
+        def create_without_scope(name)
           attribute = self.attribute
-          owner_class.named_scope name.to_sym, lambda {|*values| {:conditions => ["#{attribute} NOT IN (?)", values.flatten]}}
+          define_scope(name, lambda {|values| {:conditions => ["#{attribute} NOT IN (?)", values]}})
         end
         
         # Creates a new callback in the callback chain, always inserting it
@@ -240,6 +247,28 @@ module StateMachine
         end
         
       private
+        # Defines a new named scope with the given name.  Since ActiveRecord
+        # does not allow direct access to the model being used within the
+        # evaluation of a dynamic named scope, the scope must be generated
+        # manually.  It's necessary to have access to the model so that the
+        # state names can be translated to their associated values and so that
+        # inheritance is respected properly.
+        def define_scope(name, scope)
+          name = name.to_sym
+          attribute = self.attribute
+          
+          # Created the scope and then override it with state translation
+          owner_class.named_scope(name)
+          owner_class.scopes[name] = lambda do |klass, *states|
+            machine_states = klass.state_machines[attribute].states
+            values = states.flatten.map {|state| machine_states.fetch(state).value}
+            
+            ::ActiveRecord::NamedScope::Scope.new(klass, scope.call(values))
+          end
+          
+          false
+        end
+        
         # Notifies observers on the given object that a callback occurred
         # involving the given transition.  This will attempt to call the
         # following methods on observers:
@@ -251,11 +280,8 @@ module StateMachine
         def notify(type, object, transition)
           qualified_event = namespace ? "#{transition.event}_#{namespace}" : transition.event
           ["#{type}_#{qualified_event}", "#{type}_transition"].each do |method|
-            object.class.class_eval do
-              @observer_peers.dup.each do |observer|
-                observer.send(method, object, transition) if observer.respond_to?(method)
-              end if defined?(@observer_peers)
-            end
+            object.class.changed
+            object.class.notify_observers(method, object, transition)
           end
           
           true

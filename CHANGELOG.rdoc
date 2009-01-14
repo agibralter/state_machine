@@ -1,5 +1,32 @@
 == master
 
+== 0.5.0 / 2009-01-11
+
+* Add to_name and from_name to transition objects
+* Add nicely formatted #inspect for transitions
+* Fix ActiveRecord integrations failing when the database doesn't exist yet
+* Fix states not being drawn in GraphViz graphs in the correct order
+* Add nicely formatted #inspect for states and events
+* Simplify machine context-switching
+* Store events/states in enumerable node collections
+* No longer allow subclasses to change the integration
+* Move fire! action logic into the Event class (no longer calls fire action on the object)
+* Allow states in subclasses to have different values
+* Recommend that all states be referenced as symbols instead of strings
+* All states must now be named (and can be associated with other value types)
+* Add support for customizing the actual stored value for a state
+* Add compatibility with Ruby 1.9+
+
+== 0.4.3 / 2008-12-28
+
+* Allow dm-observer integration to be optional
+* Fix non-lambda callbacks not working for DataMapper/Sequel
+
+== 0.4.2 / 2008-12-28
+
+* Fix graphs not being drawn the same way consistently
+* Add support for sharing transitions across multiple events
+* Add support for state-driven behavior
 * Simplify initialize hooks, requiring super to be called instead
 * Add :namespace option for generated state predicates / event methods
 

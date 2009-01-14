@@ -11,9 +11,9 @@ module StateMachine
     # is available to each subclass, each subclass having a copy of its
     # superclass's attribute.
     # 
-    # The hash of state machines maps +name+ => +machine+, e.g.
+    # The hash of state machines maps +attribute+ => +machine+, e.g.
     # 
-    #   Vehicle.state_machines # => {"state" => #<StateMachine::Machine:0xb6f6e4a4 ...>
+    #   Vehicle.state_machines # => {:state => #<StateMachine::Machine:0xb6f6e4a4 ...>
     def state_machines
       @state_machines ||= superclass.state_machines.dup
     end
@@ -35,7 +35,7 @@ module StateMachine
           # Set the initial value of the machine's attribute unless it already
           # exists (which must mean the defaults are being skipped)
           value = send(attribute)
-          send("#{attribute}=", machine.initial_state(self)) if value.nil? || value.respond_to?(:empty?) && value.empty?
+          send("#{attribute}=", machine.initial_state(self).value) if value.nil? || value.respond_to?(:empty?) && value.empty?
         end
       end
   end

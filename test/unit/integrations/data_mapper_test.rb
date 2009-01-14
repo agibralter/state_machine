@@ -4,12 +4,10 @@ begin
   # Load library
   require 'rubygems'
   require 'dm-core'
-  require 'dm-observer'
-  require 'dm-aggregates'
   
   # Establish database connection
   DataMapper.setup(:default, 'sqlite3::memory:')
-  DataObjects::Sqlite3.logger = DataObjects::Logger.new("#{File.dirname(__FILE__)}/../../data_mapper.log", 0)
+  DataObjects::Sqlite3.logger = DataObjects::Logger.new("#{File.dirname(__FILE__)}/../../data_mapper.log", :info)
   
   module DataMapperTest
     class BaseTestCase < Test::Unit::TestCase
@@ -70,6 +68,7 @@ begin
       def setup
         @resource = new_resource
         @machine = StateMachine::Machine.new(@resource)
+        @machine.state :parked, :idling, :first_gear
       end
       
       def test_should_create_singular_with_scope
@@ -77,10 +76,10 @@ begin
       end
       
       def test_should_only_include_records_with_state_in_singular_with_scope
-        off = @resource.create :state => 'off'
-        on = @resource.create :state => 'on'
+        parked = @resource.create :state => 'parked'
+        idling = @resource.create :state => 'idling'
         
-        assert_equal [off], @resource.with_state('off')
+        assert_equal [parked], @resource.with_state(:parked)
       end
       
       def test_should_create_plural_with_scope
@@ -88,10 +87,10 @@ begin
       end
       
       def test_should_only_include_records_with_states_in_plural_with_scope
-        off = @resource.create :state => 'off'
-        on = @resource.create :state => 'on'
+        parked = @resource.create :state => 'parked'
+        idling = @resource.create :state => 'idling'
         
-        assert_equal [off, on], @resource.with_states('off', 'on')
+        assert_equal [parked, idling], @resource.with_states(:parked, :idling)
       end
       
       def test_should_create_singular_without_scope
@@ -99,10 +98,10 @@ begin
       end
       
       def test_should_only_include_records_without_state_in_singular_without_scope
-        off = @resource.create :state => 'off'
-        on = @resource.create :state => 'on'
+        parked = @resource.create :state => 'parked'
+        idling = @resource.create :state => 'idling'
         
-        assert_equal [off], @resource.without_state('on')
+        assert_equal [parked], @resource.without_state(:idling)
       end
       
       def test_should_create_plural_without_scope
@@ -110,11 +109,18 @@ begin
       end
       
       def test_should_only_include_records_without_states_in_plural_without_scope
-        off = @resource.create :state => 'off'
-        on = @resource.create :state => 'on'
-        error = @resource.create :state => 'error'
+        parked = @resource.create :state => 'parked'
+        idling = @resource.create :state => 'idling'
+        first_gear = @resource.create :state => 'first_gear'
         
-        assert_equal [off, on], @resource.without_states('error')
+        assert_equal [parked, idling], @resource.without_states(:first_gear)
+      end
+      
+      def test_should_allow_chaining_scopes
+        parked = @resource.create :state => 'parked'
+        idling = @resource.create :state => 'idling'
+        
+        assert_equal [idling], @resource.without_state(:parked).with_state(:idling)
       end
       
       def test_should_rollback_transaction_if_false
@@ -123,7 +129,7 @@ begin
           false
         end
         
-        assert_equal 0, @resource.count
+        assert_equal 0, @resource.all.size
       end
       
       def test_should_not_rollback_transaction_if_true
@@ -132,19 +138,19 @@ begin
           true
         end
         
-        assert_equal 1, @resource.count
+        assert_equal 1, @resource.all.size
       end
       
       def test_should_not_override_the_column_reader
         record = @resource.new
-        record.attribute_set(:state, 'off')
-        assert_equal 'off', record.state
+        record.attribute_set(:state, 'parked')
+        assert_equal 'parked', record.state
       end
       
       def test_should_not_override_the_column_writer
         record = @resource.new
-        record.state = 'off'
-        assert_equal 'off', record.attribute_get(:state)
+        record.state = 'parked'
+        assert_equal 'parked', record.attribute_get(:state)
       end
     end
     
@@ -161,19 +167,19 @@ begin
     class MachineWithInitialStateTest < BaseTestCase
       def setup
         @resource = new_resource
-        @machine = StateMachine::Machine.new(@resource, :initial => 'off')
+        @machine = StateMachine::Machine.new(@resource, :initial => 'parked')
         @record = @resource.new
       end
       
       def test_should_set_initial_state_on_created_object
-        assert_equal 'off', @record.state
+        assert_equal 'parked', @record.state
       end
     end
     
     class MachineWithNonColumnStateAttributeTest < BaseTestCase
       def setup
         @resource = new_resource
-        @machine = StateMachine::Machine.new(@resource, :status, :initial => 'off')
+        @machine = StateMachine::Machine.new(@resource, :status, :initial => 'parked')
         @record = @resource.new
       end
       
@@ -186,7 +192,7 @@ begin
       end
       
       def test_should_set_initial_state_on_created_object
-        assert_equal 'off', @record.status
+        assert_equal 'parked', @record.status
       end
     end
     
@@ -194,8 +200,9 @@ begin
       def setup
         @resource = new_resource
         @machine = StateMachine::Machine.new(@resource)
-        @record = @resource.new(:state => 'off')
-        @transition = StateMachine::Transition.new(@record, @machine, 'turn_on', 'off', 'on')
+        @machine.state :parked, :idling
+        @record = @resource.new(:state => 'parked')
+        @transition = StateMachine::Transition.new(@record, @machine, :ignite, :parked, :idling)
       end
       
       def test_should_run_before_callbacks
@@ -253,155 +260,188 @@ begin
         @transition.perform
         assert_equal @record, context
       end
-    end
-    
-    class MachineWithObserversTest < BaseTestCase
-      def setup
-        @resource = new_resource
-        @machine = StateMachine::Machine.new(@resource)
-        @record = @resource.new(:state => 'off')
-        @transition = StateMachine::Transition.new(@record, @machine, 'turn_on', 'off', 'on')
-      end
       
-      def test_should_call_before_transition_callback_if_requirements_match
-        called = false
-        
-        observer = new_observer(@resource) do
-          before_transition :from => 'off' do
-            called = true
-          end
-        end
-        
-        @transition.perform
-        assert called
-      end
-      
-      def test_should_not_call_before_transition_callback_if_requirements_do_not_match
-        called = false
-        
-        observer = new_observer(@resource) do
-          before_transition :from => 'on' do
-            called = true
-          end
-        end
-        
-        @transition.perform
-        assert !called
-      end
-      
-      def test_should_allow_targeting_specific_machine
-        @second_machine = StateMachine::Machine.new(@resource, :status)
-        
-        called_state = false
-        called_status = false
-        
-        observer = new_observer(@resource) do
-          before_transition :state, :from => 'off' do
-            called_state = true
-          end
-          
-          before_transition :status, :from => 'off' do
-            called_status = true
-          end
-        end
-        
-        @transition.perform
-        
-        assert called_state
-        assert !called_status
-      end
-      
-      def test_should_pass_transition_to_before_callbacks
+      def test_should_allow_symbolic_callbacks
         callback_args = nil
         
-        observer = new_observer(@resource) do
-          before_transition do |*args|
-            callback_args = args
-          end
+        klass = class << @record; self; end
+        klass.send(:define_method, :after_ignite) do |*args|
+          callback_args = args
         end
+        
+        @machine.before_transition(:after_ignite)
         
         @transition.perform
         assert_equal [@transition], callback_args
       end
       
-      def test_should_call_after_transition_callback_if_requirements_match
-        called = false
-        
-        observer = new_observer(@resource) do
-          after_transition :from => 'off' do
-            called = true
-          end
+      def test_should_allow_string_callbacks
+        class << @record
+          attr_reader :callback_result
         end
         
+        @machine.before_transition('@callback_result = [1, 2, 3]')
         @transition.perform
-        assert called
-      end
-      
-      def test_should_not_call_after_transition_callback_if_requirements_do_not_match
-        called = false
         
-        observer = new_observer(@resource) do
-          after_transition :from => 'on' do
-            called = true
-          end
-        end
-        
-        @transition.perform
-        assert !called
-      end
-      
-      def test_should_pass_transition_and_result_to_before_callbacks
-        callback_args = nil
-        
-        observer = new_observer(@resource) do
-          after_transition do |*args|
-            callback_args = args
-          end
-        end
-        
-        @transition.perform
-        assert_equal [@transition, true], callback_args
+        assert_equal [1, 2, 3], @record.callback_result
       end
     end
     
-    class MachineWithMixedCallbacksTest < BaseTestCase
-      def setup
-        @resource = new_resource
-        @machine = StateMachine::Machine.new(@resource)
-        @record = @resource.new(:state => 'off')
-        @transition = StateMachine::Transition.new(@record, @machine, 'turn_on', 'off', 'on')
-        
-        @notifications = notifications = []
-        
-        # Create callbacks
-        @machine.before_transition(lambda {notifications << :callback_before_transition})
-        @machine.after_transition(lambda {notifications << :callback_after_transition})
-        
-        observer = new_observer(@resource) do
-          before_transition do
-            notifications << :observer_before_transition
-          end
-          
-          after_transition do
-            notifications << :observer_after_transition
-          end
+    begin
+      require 'dm-observer'
+      
+      class MachineWithObserversTest < BaseTestCase
+        def setup
+          @resource = new_resource
+          @machine = StateMachine::Machine.new(@resource)
+          @machine.state :parked, :idling
+          @record = @resource.new(:state => 'parked')
+          @transition = StateMachine::Transition.new(@record, @machine, :ignite, :parked, :idling)
         end
         
-        @transition.perform
+        def test_should_call_before_transition_callback_if_requirements_match
+          called = false
+          
+          observer = new_observer(@resource) do
+            before_transition :from => :parked do
+              called = true
+            end
+          end
+          
+          @transition.perform
+          assert called
+        end
+        
+        def test_should_not_call_before_transition_callback_if_requirements_do_not_match
+          called = false
+          
+          observer = new_observer(@resource) do
+            before_transition :from => :idling do
+              called = true
+            end
+          end
+          
+          @transition.perform
+          assert !called
+        end
+        
+        def test_should_allow_targeting_specific_machine
+          @second_machine = StateMachine::Machine.new(@resource, :status)
+          
+          called_state = false
+          called_status = false
+          
+          observer = new_observer(@resource) do
+            before_transition :state, :from => :parked do
+              called_state = true
+            end
+            
+            before_transition :status, :from => :parked do
+              called_status = true
+            end
+          end
+          
+          @transition.perform
+          
+          assert called_state
+          assert !called_status
+        end
+        
+        def test_should_pass_transition_to_before_callbacks
+          callback_args = nil
+          
+          observer = new_observer(@resource) do
+            before_transition do |*args|
+              callback_args = args
+            end
+          end
+          
+          @transition.perform
+          assert_equal [@transition], callback_args
+        end
+        
+        def test_should_call_after_transition_callback_if_requirements_match
+          called = false
+          
+          observer = new_observer(@resource) do
+            after_transition :from => :parked do
+              called = true
+            end
+          end
+          
+          @transition.perform
+          assert called
+        end
+        
+        def test_should_not_call_after_transition_callback_if_requirements_do_not_match
+          called = false
+          
+          observer = new_observer(@resource) do
+            after_transition :from => :idling do
+              called = true
+            end
+          end
+          
+          @transition.perform
+          assert !called
+        end
+        
+        def test_should_pass_transition_and_result_to_before_callbacks
+          callback_args = nil
+          
+          observer = new_observer(@resource) do
+            after_transition do |*args|
+              callback_args = args
+            end
+          end
+          
+          @transition.perform
+          assert_equal [@transition, true], callback_args
+        end
       end
       
-      def test_should_invoke_callbacks_in_specific_order
-        expected = [
-          :callback_before_transition,
-          :observer_before_transition,
-          :callback_after_transition,
-          :observer_after_transition
-        ]
+      class MachineWithMixedCallbacksTest < BaseTestCase
+        def setup
+          @resource = new_resource
+          @machine = StateMachine::Machine.new(@resource)
+          @machine.state :parked, :idling
+          @record = @resource.new(:state => 'parked')
+          @transition = StateMachine::Transition.new(@record, @machine, :ignite, :parked, :idling)
+          
+          @notifications = notifications = []
+          
+          # Create callbacks
+          @machine.before_transition(lambda {notifications << :callback_before_transition})
+          @machine.after_transition(lambda {notifications << :callback_after_transition})
+          
+          observer = new_observer(@resource) do
+            before_transition do
+              notifications << :observer_before_transition
+            end
+            
+            after_transition do
+              notifications << :observer_after_transition
+            end
+          end
+          
+          @transition.perform
+        end
         
-        assert_equal expected, @notifications
+        def test_should_invoke_callbacks_in_specific_order
+          expected = [
+            :callback_before_transition,
+            :observer_before_transition,
+            :callback_after_transition,
+            :observer_after_transition
+          ]
+          
+          assert_equal expected, @notifications
+        end
       end
+    rescue LoadError
+      $stderr.puts 'Skipping DataMapper Observer tests. `gem install dm-observer` and try again.'
     end
   end
 rescue LoadError
-  $stderr.puts 'Skipping DataMapper tests. `gem install dm-core dm-observer dm-aggregates` and try again.'
+  $stderr.puts 'Skipping DataMapper tests. `gem install dm-core rspec hoe launchy do_sqlite3` and try again.'
 end
