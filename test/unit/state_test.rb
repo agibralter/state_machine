@@ -14,6 +14,10 @@ class StateByDefaultTest < Test::Unit::TestCase
     assert_equal :parked, @state.name
   end
   
+  def test_should_have_a_qualified_name
+    assert_equal :parked, @state.name
+  end
+  
   def test_should_use_stringify_the_name_as_the_value
     assert_equal 'parked', @state.value
   end
@@ -81,6 +85,10 @@ class StateWithoutNameTest < Test::Unit::TestCase
     assert_nil @state.name
   end
   
+  def test_should_have_a_nil_qualified_name
+    assert_nil @state.qualified_name
+  end
+  
   def test_should_have_a_nil_value
     assert_nil @state.value
   end
@@ -104,6 +112,10 @@ class StateWithNameTest < Test::Unit::TestCase
   end
   
   def test_should_have_a_name
+    assert_equal :parked, @state.name
+  end
+  
+  def test_should_have_a_qualified_name
     assert_equal :parked, @state.name
   end
   
@@ -258,6 +270,7 @@ class StateInitialTest < Test::Unit::TestCase
   
   def test_should_be_initial
     assert @state.initial
+    assert @state.initial?
   end
 end
 
@@ -269,23 +282,92 @@ class StateNotInitialTest < Test::Unit::TestCase
   
   def test_should_not_be_initial
     assert !@state.initial
+    assert !@state.initial?
   end
 end
 
-class StateWithConflictingPredicateTest < Test::Unit::TestCase
+class StateFinalTest < Test::Unit::TestCase
+  def setup
+    @machine = StateMachine::Machine.new(Class.new)
+    @state = StateMachine::State.new(@machine, :parked)
+  end
+  
+  def test_should_be_final_without_input_transitions
+    assert @state.final?
+  end
+  
+  def test_should_be_final_with_input_transitions
+    @machine.event :park do
+      transition :idling => :parked
+    end
+    
+    assert @state.final?
+  end
+  
+  def test_should_be_final_with_loopback
+    @machine.event :ignite do
+      transition :parked => same
+    end
+    
+    assert @state.final?
+  end
+end
+
+class StateNotFinalTest < Test::Unit::TestCase
+  def setup
+    @machine = StateMachine::Machine.new(Class.new)
+    @state = StateMachine::State.new(@machine, :parked)
+  end
+  
+  def test_should_not_be_final_with_outgoing_whitelist_transitions
+    @machine.event :ignite do
+      transition :parked => :idling
+    end
+    
+    assert !@state.final?
+  end
+  
+  def test_should_not_be_final_with_outgoing_all_transitions
+    @machine.event :ignite do
+      transition all => :idling
+    end
+    
+    assert !@state.final?
+  end
+  
+  def test_should_not_be_final_with_outgoing_blacklist_transitions
+    @machine.event :ignite do
+      transition all - :first_gear => :idling
+    end
+    
+    assert !@state.final?
+  end
+end
+
+class StateWithConflictingHelpersTest < Test::Unit::TestCase
   def setup
     @klass = Class.new do
       def parked?
-        1
+        0
       end
     end
     @machine = StateMachine::Machine.new(@klass)
-    @state = StateMachine::State.new(@machine, :parked)
+    @machine.state :parked
     @object = @klass.new
   end
   
-  def test_should_redefine_state_predicate
-    assert_equal false, @object.parked?
+  def test_should_not_redefine_state_predicate
+    assert_equal 0, @object.parked?
+  end
+  
+  def test_should_allow_super_chaining
+    @klass.class_eval do
+      def parked?
+        super ? 1 : 0
+      end
+    end
+    
+    assert_equal 0, @object.parked?
   end
 end
 
@@ -295,6 +377,14 @@ class StateWithNamespaceTest < Test::Unit::TestCase
     @machine = StateMachine::Machine.new(@klass, :namespace => 'gear')
     @state = StateMachine::State.new(@machine, :parked)
     @object = @klass.new
+  end
+  
+  def test_should_have_a_name
+    assert_equal :parked, @state.name
+  end
+  
+  def test_should_have_a_qualified_name
+    assert_equal :gear_parked, @state.qualified_name
   end
   
   def test_should_namespace_predicate
@@ -521,6 +611,9 @@ begin
   class StateDrawingTest < Test::Unit::TestCase
     def setup
       @machine = StateMachine::Machine.new(Class.new)
+      @machine.event :ignite do
+        transition :parked => :idling
+      end
       @state = StateMachine::State.new(@machine, :parked, :value => 1)
       
       graph = GraphViz.new('G')
@@ -551,14 +644,22 @@ begin
   class StateDrawingInitialTest < Test::Unit::TestCase
     def setup
       @machine = StateMachine::Machine.new(Class.new)
+      @machine.event :ignite do
+        transition :parked => :idling
+      end
       @state = StateMachine::State.new(@machine, :parked, :initial => true)
       
-      graph = GraphViz.new('G')
-      @node = @state.draw(graph)
+      @graph = GraphViz.new('G')
+      @node = @state.draw(@graph)
     end
     
-    def test_should_use_doublecircle_as_shape
-      assert_equal 'doublecircle', @node['shape']
+    def test_should_use_ellipse_as_shape
+      assert_equal 'ellipse', @node['shape']
+    end
+    
+    def test_should_draw_edge_between_point_and_state
+      assert_equal 2, @graph.node_count
+      assert_equal 1, @graph.edge_count
     end
   end
   
@@ -595,6 +696,37 @@ begin
     
     def test_should_use_description_as_label
       assert_equal 'parked (*)', @node['label']
+    end
+  end
+  
+  class StateDrawingNonFinalTest < Test::Unit::TestCase
+    def setup
+      @machine = StateMachine::Machine.new(Class.new)
+      @machine.event :ignite do
+        transition :parked => :idling
+      end
+      @state = StateMachine::State.new(@machine, :parked)
+      
+      graph = GraphViz.new('G')
+      @node = @state.draw(graph)
+    end
+    
+    def test_should_use_ellipse_as_shape
+      assert_equal 'ellipse', @node['shape']
+    end
+  end
+  
+  class StateDrawingFinalTest < Test::Unit::TestCase
+    def setup
+      @machine = StateMachine::Machine.new(Class.new)
+      @state = StateMachine::State.new(@machine, :parked)
+      
+      graph = GraphViz.new('G')
+      @node = @state.draw(graph)
+    end
+    
+    def test_should_use_doublecircle_as_shape
+      assert_equal 'doublecircle', @node['shape']
     end
   end
 rescue LoadError

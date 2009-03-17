@@ -3,6 +3,8 @@ require File.expand_path(File.dirname(__FILE__) + '/../../test_helper')
 begin
   # Load library
   require 'rubygems'
+  
+  gem 'dm-core', ENV['DM_VERSION'] ? "=#{ENV['DM_VERSION']}" : '>=0.9.0'
   require 'dm-core'
   
   # Establish database connection
@@ -139,6 +141,24 @@ begin
         end
         
         assert_equal 1, @resource.all.size
+      end
+      
+      def test_should_invalidate_using_errors
+        record = @resource.new
+        record.state = 'parked'
+        
+        @machine.invalidate(record, StateMachine::Event.new(@machine, :park))
+        
+        assert_equal ['cannot be transitioned via :park from :parked'], record.errors.on(:state)
+      end
+      
+      def test_should_clear_errors_on_reset
+        record = @resource.new
+        record.state = 'parked'
+        record.errors.add(:state, 'is invalid')
+        
+        @machine.reset(record)
+        assert_nil record.errors.on(:id)
       end
       
       def test_should_not_override_the_column_reader
@@ -323,6 +343,7 @@ begin
     end
     
     begin
+      gem 'dm-observer', ENV['DM_VERSION'] ? "=#{ENV['DM_VERSION']}" : '>=0.9.0'
       require 'dm-observer'
       
       class MachineWithObserversTest < BaseTestCase
@@ -332,6 +353,16 @@ begin
           @machine.state :parked, :idling
           @record = @resource.new(:state => 'parked')
           @transition = StateMachine::Transition.new(@record, @machine, :ignite, :parked, :idling)
+        end
+        
+        def test_should_provide_matcher_helpers
+          matchers = []
+          
+          new_observer(@resource) do
+            matchers = [all, any, same]
+          end
+          
+          assert_equal [StateMachine::AllMatcher.instance, StateMachine::AllMatcher.instance, StateMachine::LoopbackMatcher.instance], matchers
         end
         
         def test_should_call_before_transition_callback_if_requirements_match
@@ -474,9 +505,45 @@ begin
         end
       end
     rescue LoadError
-      $stderr.puts 'Skipping DataMapper Observer tests. `gem install dm-observer` and try again.'
+      $stderr.puts "Skipping DataMapper Observer tests. `gem install dm-observer#{" -v #{ENV['DM_VERSION']}" if ENV['DM_VERSION']}` and try again."
+    end
+    
+    begin
+      gem 'dm-validations', ENV['DM_VERSION'] ? "=#{ENV['DM_VERSION']}" : '>=0.9.0'
+      require 'dm-validations'
+      
+      class MachineWithStateDrivenValidationsTest < BaseTestCase
+        def setup
+          @resource = new_resource do
+            attr_accessor :seatbelt
+          end
+          
+          @machine = StateMachine::Machine.new(@resource)
+          @machine.state :first_gear, :second_gear do
+            validates_present :seatbelt
+          end
+          @machine.other_states :parked
+        end
+        
+        def test_should_be_valid_if_validation_fails_outside_state_scope
+          record = @resource.new(:state => 'parked', :seatbelt => nil)
+          assert record.valid?
+        end
+        
+        def test_should_be_invalid_if_validation_fails_within_state_scope
+          record = @resource.new(:state => 'first_gear', :seatbelt => nil)
+          assert !record.valid?
+        end
+        
+        def test_should_be_valid_if_validation_succeeds_within_state_scope
+          record = @resource.new(:state => 'second_gear', :seatbelt => true)
+          assert record.valid?
+        end
+      end
+    rescue LoadError
+      $stderr.puts "Skipping DataMapper Validation tests. `gem install dm-validations#{" -v #{ENV['DM_VERSION']}" if ENV['DM_VERSION']}` and try again."
     end
   end
 rescue LoadError
-  $stderr.puts 'Skipping DataMapper tests. `gem install dm-core cucumber rspec hoe launchy do_sqlite3` and try again.'
+  $stderr.puts "Skipping DataMapper tests. `gem install dm-core#{" -v #{ENV['DM_VERSION']}" if ENV['DM_VERSION']}`, `gem install cucumber rspec hoe launchy do_sqlite3` and try again."
 end

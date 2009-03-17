@@ -3,6 +3,8 @@ require File.expand_path(File.dirname(__FILE__) + '/../../test_helper')
 begin
   # Load library
   require 'rubygems'
+  
+  gem 'sequel', ENV['SEQUEL_VERSION'] ? "=#{ENV['SEQUEL_VERSION']}" : '>=2.8.0'
   require 'sequel'
   require 'logger'
   
@@ -22,6 +24,8 @@ begin
             column :state, :string
           end if auto_migrate
           model = Class.new(Sequel::Model(:foo)) do
+            self.raise_on_save_failure = false
+            
             def self.name; 'SequelTest::Foo'; end
           end
           model.class_eval(&block) if block_given?
@@ -125,6 +129,24 @@ begin
         end
         
         assert_equal 1, @model.count
+      end
+      
+      def test_should_invalidate_using_errors
+        record = @model.new
+        record.state = 'parked'
+        
+        @machine.invalidate(record, StateMachine::Event.new(@machine, :park))
+        
+        assert_equal ['cannot be transitioned via :park from :parked'], record.errors.on(:state)
+      end
+      
+      def test_should_clear_errors_on_reset
+        record = @model.new
+        record.state = 'parked'
+        record.errors.add(:state, 'is invalid')
+        
+        @machine.reset(record)
+        assert_nil record.errors.on(:id)
       end
       
       def test_should_not_override_the_column_reader
@@ -271,7 +293,7 @@ begin
         @machine.after_transition(lambda {|*args| callback_args = args})
         
         @transition.perform
-        assert_equal [@transition, @record], callback_args
+        assert_equal [@transition, true], callback_args
       end
       
       def test_should_run_after_callbacks_with_the_context_of_the_record
@@ -307,7 +329,36 @@ begin
         assert_equal [1, 2, 3], @record.callback_result
       end
     end
+    
+    class MachineWithStateDrivenValidationsTest < BaseTestCase
+      def setup
+        @model = new_model do
+          attr_accessor :seatbelt
+        end
+        
+        @machine = StateMachine::Machine.new(@model)
+        @machine.state :first_gear do
+          validates_presence_of :seatbelt
+        end
+        @machine.other_states :parked
+      end
+      
+      def test_should_be_valid_if_validation_fails_outside_state_scope
+        record = @model.new(:state => 'parked', :seatbelt => nil)
+        assert record.valid?
+      end
+      
+      def test_should_be_invalid_if_validation_fails_within_state_scope
+        record = @model.new(:state => 'first_gear', :seatbelt => nil)
+        assert !record.valid?
+      end
+      
+      def test_should_be_valid_if_validation_succeeds_within_state_scope
+        record = @model.new(:state => 'first_gear', :seatbelt => true)
+        assert record.valid?
+      end
+    end
   end
 rescue LoadError
-  $stderr.puts 'Skipping Sequel tests. `gem install sequel` and try again.'
+  $stderr.puts "Skipping Sequel tests. `gem install sequel#{" -v #{ENV['SEQUEL_VERSION']}" if ENV['SEQUEL_VERSION']}` and try again."
 end

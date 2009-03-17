@@ -16,7 +16,7 @@ module StateMachine
     # The state machine for which this transition is defined
     attr_reader :machine
     
-    # The event that caused the transition
+    # The event that triggered the transition
     attr_reader :event
     
     # The original state value *before* the transition
@@ -30,6 +30,10 @@ module StateMachine
     
     # The new state name *after* the transition
     attr_reader :to_name
+    
+    # The arguments passed in to the event that triggered the transition
+    # (does not include the +run_action+ boolean argument if specified)
+    attr_reader :args
     
     # Creates a new, specific transition
     def initialize(object, machine, event, from_name, to_name) #:nodoc:
@@ -75,7 +79,10 @@ module StateMachine
     #   transition = StateMachine::Transition.new(vehicle, machine, :ignite, :parked, :idling)
     #   transition.perform          # => Runs the +save+ action after setting the state attribute
     #   transition.perform(false)   # => Only sets the state attribute
-    def perform(run_action = true)
+    def perform(*args)
+      run_action = [true, false].include?(args.last) ? args.pop : true
+      @args = args
+      
       result = false
       
       machine.within_transaction(object) do
@@ -85,7 +92,7 @@ module StateMachine
           
           # Updates the object's attribute to the ending state
           object.send("#{attribute}=", to)
-          result = run_action && machine.action ? object.send(machine.action) : true
+          result = run_action && machine.action ? object.send(machine.action) != false : true
           
           # Always run after callbacks regardless of whether the action failed.
           # Result is included in case the callback depends on this value

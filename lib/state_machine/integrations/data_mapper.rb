@@ -16,7 +16,7 @@ module StateMachine
     #     
     #     state_machine :initial => :parked do
     #       event :ignite do
-    #         transition :to => :idling, :from => :parked
+    #         transition :parked => :idling
     #       end
     #     end
     #   end
@@ -70,6 +70,23 @@ module StateMachine
     # rolled back.  If an after callback halts the chain, the previous result
     # still applies and the transaction is *not* rolled back.
     # 
+    # == Validation errors
+    # 
+    # If an event fails to successfully fire because there are no matching
+    # transitions for the current record, a validation error is added to the
+    # record's state attribute to help in determining why it failed and for
+    # reporting via the UI.
+    # 
+    # For example,
+    # 
+    #   vehicle = Vehicle.create(:state => 'idling')  # => #<Vehicle id=1 name=nil state="idling">
+    #   vehicle.ignite                                # => false
+    #   vehicle.errors.full_messages                  # => ["cannot be transitioned via :ignite from :idling"]
+    # 
+    # If an event fails to fire because of a validation error on the record and
+    # *not* because a matching transition was not available, no error messages
+    # will be added to the state attribute.
+    # 
     # == Scopes
     # 
     # To assist in filtering models with specific states, a series of class
@@ -122,7 +139,7 @@ module StateMachine
     #     property :state, String
     #     
     #     state_machine :initial => :parked do
-    #       before_transition :to => :idling do
+    #       before_transition any => :idling do
     #         put_on_seatbelt
     #       end
     #       
@@ -131,7 +148,7 @@ module StateMachine
     #       end
     #       
     #       event :ignite do
-    #         transition :to => :idling, :from => :parked
+    #         transition :parked => :idling
     #       end
     #     end
     #     
@@ -157,6 +174,17 @@ module StateMachine
       # Loads additional files specific to DataMapper
       def self.extended(base) #:nodoc:
         require 'state_machine/integrations/data_mapper/observer' if ::DataMapper.const_defined?('Observer')
+      end
+      
+      # Adds a validation error to the given object after failing to fire a
+      # specific event
+      def invalidate(object, event)
+        object.errors.add(attribute, invalid_message(object, event)) if object.respond_to?(:errors)
+      end
+      
+      # Resets an errors previously added when invalidating the given object
+      def reset(object)
+        object.errors.clear
       end
       
       # Runs a new database transaction, rolling back any changes if the

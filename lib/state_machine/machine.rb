@@ -7,6 +7,7 @@ require 'state_machine/event'
 require 'state_machine/callback'
 require 'state_machine/node_collection'
 require 'state_machine/state_collection'
+require 'state_machine/matcher_helpers'
 
 module StateMachine
   # Represents a state machine for a particular attribute.  State machines
@@ -43,8 +44,8 @@ module StateMachine
   # example,
   # 
   #   class Vehicle
-  #     state_machine, :initial => :parked do
-  #       before_transition :to => :idling, :do => lambda {|vehicle| throw :halt}
+  #     state_machine :initial => :parked do
+  #       before_transition any => :idling, :do => lambda {|vehicle| throw :halt}
   #       ...
   #     end
   #   end
@@ -64,7 +65,7 @@ module StateMachine
   #   class Vehicle
   #     state_machine do
   #       event :park do
-  #         transition :to => :parked, :from => :idling
+  #         transition :idling => :parked
   #       end
   #       ...
   #     end
@@ -115,8 +116,36 @@ module StateMachine
   #     end
   #   end
   # 
-  # Additional observer-like behavior may be exposed by the various
-  # integrations available.  See below for more information.
+  # Additional observer-like behavior may be exposed by the various integrations
+  # available.  See below for more information.
+  # 
+  # == Overriding instance / class methods
+  # 
+  # Hooking in behavior to the generated instance / class methods from the
+  # state machine, events, and states is very simple because of the way these
+  # methods are generated on the class.  Using the class's ancestors, the
+  # original generated method can be referred to via +super+.  For example,
+  # 
+  #   class Vehicle
+  #     state_machine do
+  #       event :park do
+  #         ...
+  #       end
+  #     end
+  #     
+  #     def park(*args)
+  #       logger.info "..."
+  #       super
+  #     end
+  #   end
+  # 
+  # In the above example, the +park+ instance method that's generated on the
+  # Vehicle class (by the associated event) is overriden with custom behavior.
+  # Once this behavior is complete, the original method from the state machine
+  # is invoked by simply calling +super+.
+  # 
+  # The same technique can be used for +state+, +state_name+, and all other
+  # instance *and* class methods on the Vehicle class.
   # 
   # == Integrations
   # 
@@ -138,8 +167,13 @@ module StateMachine
   # constants defined under the StateMachine::Integrations namespace.
   class Machine
     include Assertions
+    include MatcherHelpers
     
     class << self
+      # The default message to use when invalidating objects that fail to
+      # transition when triggering an event
+      attr_accessor :default_invalid_message
+      
       # Attempts to find or create a state machine for the given class.  For
       # example,
       # 
@@ -206,6 +240,9 @@ module StateMachine
       end
     end
     
+    # Set defaults
+    self.default_invalid_message = 'cannot be transitioned via :%s from :%s'
+    
     # The class that the machine is defined in
     attr_accessor :owner_class
     
@@ -243,7 +280,7 @@ module StateMachine
     # Creates a new state machine for the given attribute
     def initialize(owner_class, *args, &block)
       options = args.last.is_a?(Hash) ? args.pop : {}
-      assert_valid_keys(options, :initial, :action, :plural, :namespace, :integration)
+      assert_valid_keys(options, :initial, :action, :plural, :namespace, :integration, :invalid_message)
       
       # Set machine configuration
       @attribute = args.first || :state
@@ -251,6 +288,8 @@ module StateMachine
       @states = StateCollection.new
       @callbacks = {:before => [], :after => []}
       @namespace = options[:namespace]
+      @invalid_message = options[:invalid_message]
+      
       self.owner_class = owner_class
       self.initial_state = options[:initial]
       
@@ -296,6 +335,14 @@ module StateMachine
         include StateMachine::InstanceMethods
       end unless owner_class.included_modules.include?(StateMachine::InstanceMethods)
       
+      # Create modules for extending the class with state/event-specific methods
+      class_helper_module = @class_helper_module = Module.new
+      instance_helper_module = @instance_helper_module = Module.new
+      owner_class.class_eval do
+        extend class_helper_module
+        include instance_helper_module
+      end
+      
       # Record this machine as matched to the attribute in the current owner
       # class.  This will override any machines mapped to the same attribute
       # in any superclasses.
@@ -311,6 +358,54 @@ module StateMachine
       
       # Update all states to reflect the new initial state
       states.each {|state| state.initial = (state.name == @initial_state)}
+    end
+    
+    # Defines a new instance method with the given name on the machine's owner
+    # class.  If the method is already defined in the class, then this will not
+    # override it.
+    # 
+    # Not that in order for inheritance to work properly within state machines,
+    # any states/events/etc. must be referred to from the current state machine
+    # associated with the executing class.
+    # 
+    # Example:
+    # 
+    #   attribute = machine.attribute
+    #   machine.define_instance_method(:parked?) do |machine, object|
+    #     machine.state?(object, :parked)
+    #   end
+    def define_instance_method(method, &block)
+      attribute = self.attribute
+      
+      @instance_helper_module.class_eval do
+        define_method(method) do |*args|
+          block.call(self.class.state_machines[attribute], self, *args)
+        end
+      end
+    end
+    attr_reader :instance_helper_module
+    
+    # Defines a new class method with the given name on the machine's owner
+    # class.  If the method is already defined in the class, then this will not
+    # override it.
+    # 
+    # Not that in order for inheritance to work properly within state machines,
+    # any states/events/etc. must be referred to from the current state machine
+    # associated with the executing class.
+    # 
+    # Example:
+    # 
+    #   machine.define_class_method(:states) do |machine, klass|
+    #     machine.states.keys
+    #   end
+    def define_class_method(method, &block)
+      attribute = self.attribute
+      
+      @class_helper_module.class_eval do
+        define_method(method) do |*args|
+          block.call(self.state_machines[attribute], self, *args)
+        end
+      end
     end
     
     # Gets the initial state of the machine for the given object. If a dynamic
@@ -369,7 +464,7 @@ module StateMachine
     #   class Vehicle
     #     state_machine :initial => :parked do
     #       event :ignite do
-    #         transition :to => :idling, :from => :parked
+    #         transition :parked => :idling
     #       end
     #     end
     #   end
@@ -387,7 +482,7 @@ module StateMachine
     #   class Vehicle
     #     state_machine :initial => :parked do
     #       event :ignite do
-    #         transition :to => :idling, :from => :parked
+    #         transition :parked => :idling
     #       end
     #       
     #       state :idling, :value => 'IDLING'
@@ -405,7 +500,7 @@ module StateMachine
     #   class Vehicle < ActiveRecord::Base
     #     state_machine :state_id, :initial => :parked do
     #       event :ignite do
-    #         transition :to => :idling, :from => :parked
+    #         transition :parked => :idling
     #       end
     #       
     #       states.each {|state| self.state(state.name, :value => VehicleState.find_by_name(state.name.to_s).id)}
@@ -424,11 +519,11 @@ module StateMachine
     #   class Vehicle
     #     state_machine :purchased_at, :initial => :available do
     #       event :purchase do
-    #         transition :to => :purchased
+    #         transition all => :purchased
     #       end
     #       
     #       event :restock do
-    #         transition :to => :available
+    #         transition all => :available
     #       end
     #       
     #       state :available, :value => nil
@@ -452,7 +547,7 @@ module StateMachine
     # 
     # == Behaviors
     # 
-    # Behaviors defined a series of methods to mixin with objects when the current
+    # Behaviors define a series of methods to mixin with objects when the current
     # state matches the given one(s).  This allows instance methods to behave
     # a specific way depending on what the value of the object's state is.
     # 
@@ -464,7 +559,7 @@ module StateMachine
     #     
     #     state_machine :initial => :parked do
     #       event :ignite do
-    #         transition :to => :idling, :from => :parked
+    #         transition :parked => :idling
     #       end
     #       
     #       state :parked do
@@ -540,6 +635,39 @@ module StateMachine
     #   vehicle = Vehicle.new
     #   vehicle.state = 'backing_up'
     #   vehicle.speed               # => NoMethodError: undefined method 'speed' for #<Vehicle:0xb7d296ac> in state "backing_up"
+    # 
+    # == State-aware class methods
+    # 
+    # In addition to defining scopes for instance methods that are state-aware,
+    # the same can be done for certain types of class methods.
+    # 
+    # Some libraries have support for class-level methods that only run certain
+    # behaviors based on a conditions hash passed in.  For example:
+    # 
+    #   class Vehicle < ActiveRecord::Base
+    #     state_machine do
+    #       ...
+    #       state :first_gear, :second_gear, :third_gear do
+    #         validates_presence_of   :speed
+    #         validates_inclusion_of  :speed, :in => 0..25, :if => :in_school_zone?
+    #       end
+    #     end
+    #   end
+    # 
+    # In the above ActiveRecord model, two validations have been defined which
+    # will *only* run when the Vehicle object is in one of the three states:
+    # +first_gear+, +second_gear+, or +third_gear.  Notice, also, that if/unless
+    # conditions can continue to be used.
+    # 
+    # This functionality is not library-specific and can work for any class-level
+    # method that is defined like so:
+    # 
+    #   def validates_presence_of(attribute, options = {})
+    #     ...
+    #   end
+    # 
+    # The minimum requirement is that the last argument in the method be an
+    # options hash which contains at least <tt>:if</tt> condition support.
     def state(*names, &block)
       options = names.last.is_a?(Hash) ? names.pop : {}
       assert_valid_keys(options, :value, :if)
@@ -562,7 +690,7 @@ module StateMachine
     # Determines whether the given object is in a specific state.  If the
     # object's current value doesn't match the state, then this will return
     # false, otherwise true.  If the given state is unknown, then an ArgumentError
-    # exception will be raised.
+    # will be raised.
     # 
     # == Examples
     # 
@@ -616,6 +744,9 @@ module StateMachine
     # Defines one or more events for the machine and the transitions that can
     # be performed when those events are run.
     # 
+    # This method is also aliased as +on+ for improved compatibility with
+    # using a domain-specific language.
+    # 
     # == Instance methods
     # 
     # The following instance methods are generated when a new event is defined
@@ -643,11 +774,11 @@ module StateMachine
     # transitions that can happen as a result of that event.  For example,
     # 
     #   event :park, :stop do
-    #     transition :to => :parked, :from => :idling
+    #     transition :idling => :parked
     #   end
     #   
     #   event :first_gear do
-    #     transition :to => :first_gear, :from => :parked, :if => :seatbelt_on?
+    #     transition :parked => :first_gear, :if => :seatbelt_on?
     #   end
     # 
     # See StateMachine::Event#transition for more information on
@@ -664,10 +795,40 @@ module StateMachine
     #     
     #     state_machine do
     #       event :park do
-    #         transition :to => :parked, :from => Vehicle.safe_states
+    #         transition Vehicle.safe_states => :parked
     #       end
     #     end
     #   end 
+    # 
+    # == Defining additional arguments
+    # 
+    # Additional arguments on event actions can be defined like so:
+    # 
+    #   class Vehicle
+    #     state_machine do
+    #       event :park do
+    #         ...
+    #       end
+    #     end
+    #     
+    #     def park(kind = :parallel, *args)
+    #       take_deep_breath if kind == :parallel
+    #       super
+    #     end
+    #     
+    #     def take_deep_breath
+    #       sleep 3
+    #     end
+    #   end
+    # 
+    # Note that +super+ is called instead of <tt>super(*args)</tt>.  This
+    # allows the entire arguments list to be accessed by transition callbacks
+    # through StateMachine::Transition#args like so:
+    # 
+    #   after_transition :on => :park do |vehicle, transition|
+    #     kind = *transition.args
+    #     ...
+    #   end
     # 
     # == Example
     # 
@@ -675,15 +836,15 @@ module StateMachine
     #     state_machine do
     #       # The park, stop, and halt events will all share the given transitions
     #       event :park, :stop, :halt do
-    #         transition :to => :parked, :from => [:idling, :backing_up]
+    #         transition [:idling, :backing_up] => :parked
     #       end
     #       
     #       event :stop do
-    #         transition :to => :idling, :from => :first_gear
+    #         transition :first_gear => :idling
     #       end
     #       
     #       event :ignite do
-    #         transition :to => :idling, :from => :parked
+    #         transition :parked => :idling
     #       end
     #     end
     #   end
@@ -703,11 +864,71 @@ module StateMachine
       
       events.length == 1 ? events.first : events
     end
+    alias_method :on, :event
     
     # Creates a callback that will be invoked *before* a transition is
-    # performed so long as the given configuration options match the transition.
-    # Each part of the transition (event, to state, from state) must match in
-    # order for the callback to get invoked.
+    # performed so long as the given requirements match the transition.
+    # 
+    # == The callback
+    # 
+    # Callbacks must be defined as either the only argument, in the :do option,
+    # or as a block.  For example,
+    # 
+    #   class Vehicle
+    #     state_machine do
+    #       before_transition :set_alarm
+    #       before_transition all => :parked :do => :set_alarm
+    #       before_transition all => :parked do |vehicle, transition|
+    #         vehicle.set_alarm
+    #       end
+    #       ...
+    #     end
+    #   end
+    # 
+    # == State requirements
+    # 
+    # Callbacks can require that the machine be transitioning from and to
+    # specific states.  These requirements use a Hash syntax to map beginning
+    # states to ending states.  For example,
+    # 
+    #   before_transition :parked => :idling, :idling => :first_gear, :do => :set_alarm
+    # 
+    # In this case, the +set_alarm+ callback will only be called if the machine
+    # is transitioning from +parked+ to +idling+ or from +idling+ to +parked+.
+    # 
+    # To help define state requirements, a set of helpers are available for
+    # slightly more complex matching:
+    # * <tt>all</tt> - Matches every state/event in the machine
+    # * <tt>all - [:parked, :idling, ...]</tt> - Matches every state/event except those specified
+    # * <tt>any</tt> - An alias for +all+ (matches every state/event in the machine)
+    # * <tt>same</tt> - Matches the same state being transitioned from
+    # 
+    # See StateMachine::MatcherHelpers for more information.
+    # 
+    # Examples:
+    # 
+    #   before_transition :parked => [:idling, :first_gear], :do => ...     # Matches from parked to idling or first_gear
+    #   before_transition all - [:parked, :idling] => :idling, :do => ...   # Matches from every state except parked and idling to idling
+    #   before_transition all => :parked, :do => ...                        # Matches all states to parked
+    #   before_transition any => same, :do => ...                           # Matches every loopback
+    # 
+    # == Event requirements
+    # 
+    # In addition to state requirements, an event requirement can be defined so
+    # that the callback is only invoked on specific events using the +on+
+    # option.  This can also use the same matcher helpers as the state
+    # requirements.
+    # 
+    # Examples:
+    # 
+    #   before_transition :on => :ignite, :do => ...                        # Matches only on ignite
+    #   before_transition :on => all - :ignite, :do => ...                  # Matches on every event except ignite
+    #   before_transition :parked => :idling, :on => :ignite, :do => ...    # Matches from parked to idling on ignite
+    # 
+    # == Verbose Requirements
+    # 
+    # Requirements can also be defined using verbose options rather than the
+    # implicit Hash syntax and helper methods described above.
     # 
     # Configuration options:
     # * <tt>:from</tt> - One or more states being transitioned from.  If none
@@ -719,8 +940,18 @@ module StateMachine
     # * <tt>:except_from</tt> - One or more states *not* being transitioned from
     # * <tt>:except_to</tt> - One more states *not* being transitioned to
     # * <tt>:except_on</tt> - One or more events that *did not* fire the transition
-    # * <tt>:do</tt> - The callback to invoke when a transition matches. This
-    #   can be a method, proc or string.
+    # 
+    # Examples:
+    # 
+    #   before_transition :from => :ignite, :to => :idling, :on => :park, :do => ...
+    #   before_transition :except_from => :ignite, :except_to => :idling, :except_on => :park, :do => ...
+    # 
+    # == Conditions
+    # 
+    # In addition to the state/event requirements, a condition can also be
+    # defined to help determine whether the callback should be invoked.
+    # 
+    # Configuration options:
     # * <tt>:if</tt> - A method, proc or string to call to determine if the
     #   callback should occur (e.g. :if => :allow_callbacks, or
     #   :if => lambda {|user| user.signup_step > 2}). The method, proc or string
@@ -730,24 +961,10 @@ module StateMachine
     #   :unless => lambda {|user| user.signup_step <= 2}). The method, proc or
     #   string should return or evaluate to a true or false value. 
     # 
-    # The +except+ group of options (+except_to+, +exception_from+, and
-    # +except_on+) acts as the +unless+ equivalent of their counterparts (+to+,
-    # +from+, and +on+, respectively)
+    # Examples:
     # 
-    # == The callback
-    # 
-    # When defining additional configuration options, callbacks must be defined
-    # in either the :do option or as a block.  For example,
-    # 
-    #   class Vehicle
-    #     state_machine do
-    #       before_transition :to => :parked, :do => :set_alarm
-    #       before_transition :to => :parked do |vehicle, transition|
-    #         vehicle.set_alarm
-    #       end
-    #       ...
-    #     end
-    #   end
+    #   before_transition :parked => :idling, :if => :moving?
+    #   before_transition :on => :ignite, :unless => :seatbelt_on?
     # 
     # === Accessing the transition
     # 
@@ -784,13 +1001,13 @@ module StateMachine
     #       before_transition :update_dashboard
     #       
     #       # Before specific transition:
-    #       before_transition :to => :parked, :from => [:first_gear, :idling], :on => :park, :do => :take_off_seatbelt
+    #       before_transition [:first_gear, :idling] => :parked, :on => :park, :do => :take_off_seatbelt
     #       
     #       # With conditional callback:
     #       before_transition :to => :parked, :do => :take_off_seatbelt, :if => :seatbelt_on?
     #       
-    #       # Using :except counterparts:
-    #       before_transition :except_to => :stalled, :except_from => :stalled, :except_on => :crash, :do => :update_dashboard
+    #       # Using helpers:
+    #       before_transition all - :stalled => same, :on => any - :crash, :do => :update_dashboard
     #       ...
     #     end
     #   end
@@ -802,100 +1019,25 @@ module StateMachine
     end
     
     # Creates a callback that will be invoked *after* a transition is
-    # performed, so long as the given configuration options match the transition.
-    # Each part of the transition (event, to state, from state) must match
-    # in order for the callback to get invoked.
+    # performed so long as the given requirements match the transition.
     # 
-    # Configuration options:
-    # * <tt>:from</tt> - One or more states being transitioned from.  If none
-    #   are specified, then all states will match.
-    # * <tt>:to</tt> - One or more states being transitioned to.  If none are
-    #   specified, then all states will match.
-    # * <tt>:on</tt> - One or more events that fired the transition.  If none
-    #   are specified, then all events will match.
-    # * <tt>:except_from</tt> - One or more states *not* being transitioned from
-    # * <tt>:except_to</tt> - One more states *not* being transitioned to
-    # * <tt>:except_on</tt> - One or more events that *did not* fire the transition
-    # * <tt>:do</tt> - The callback to invoke when a transition matches. This
-    #   can be a method, proc or string.
-    # * <tt>:if</tt> - A method, proc or string to call to determine if the
-    #   callback should occur (e.g. :if => :allow_callbacks, or
-    #   :if => lambda {|user| user.signup_step > 2}). The method, proc or string
-    #   should return or evaluate to a true or false value. 
-    # * <tt>:unless</tt> - A method, proc or string to call to determine if the
-    #   callback should not occur (e.g. :unless => :skip_callbacks, or
-    #   :unless => lambda {|user| user.signup_step <= 2}). The method, proc or
-    #   string should return or evaluate to a true or false value. 
-    # 
-    # The +except+ group of options (+except_to+, +exception_from+, and
-    # +except_on+) acts as the +unless+ equivalent of their counterparts (+to+,
-    # +from+, and +on+, respectively)
-    # 
-    # == The callback
-    # 
-    # When defining additional configuration options, callbacks must be defined
-    # in either the :do option or as a block.  For example,
-    # 
-    #   class Vehicle
-    #     state_machine do
-    #       after_transition :to => :parked, :do => :set_alarm
-    #       after_transition :to => :parked do |vehicle, transition, result|
-    #         vehicle.set_alarm
-    #       end
-    #       ...
-    #     end
-    #   end
-    # 
-    # === Accessing the transition / result
-    # 
-    # In addition to passing the object being transitioned, the actual
-    # transition describing the context (e.g. event, from, to) and the result
-    # from calling the object's action can be optionally passed as well.  These
-    # additional arguments are only passed if the callback allows for it.
-    # 
-    # For example,
-    # 
-    #   class Vehicle
-    #     # Only specifies one parameter (the object being transitioned)
-    #     after_transition :to => :parked, :do => lambda {|vehicle| vehicle.set_alarm}
-    #     
-    #     # Specifies 3 parameters (object being transitioned, transition, and action result)
-    #     after_transition :to => :parked, :do => lambda {|vehicle, transition, result| vehicle.set_alarm(transition) if result}
-    #   end
-    # 
-    # *Note* that the object in the callback will only be passed in as an
-    # argument if callbacks are configured to *not* be bound to the object
-    # involved.  This is the default and may change on a per-integration basis.
-    # 
-    # See StateMachine::Transition for more information about the
-    # attributes available on the transition.
-    # 
-    # == Examples
-    # 
-    # Below is an example of a model with one state machine and various types
-    # of +after+ transitions defined for it:
-    # 
-    #   class Vehicle
-    #     state_machine do
-    #       # After all transitions
-    #       after_transition :update_dashboard
-    #       
-    #       # After specific transition:
-    #       after_transition :to => :parked, :from => [:first_gear, :idling], :on => :park, :do => :take_off_seatbelt
-    #       
-    #       # With conditional callback:
-    #       after_transition :to => :parked, :do => :take_off_seatbelt, :if => :seatbelt_on?
-    #       
-    #       # Using :except counterparts:
-    #       after_transition :except_to => :stalled, :except_from => :stalled, :except_on => :crash, :do => :update_dashboard
-    #       ...
-    #     end
-    #   end
-    # 
-    # As can be seen, any number of transitions can be created using various
-    # combinations of configuration options.
+    # See +before_transition+ for a description of the possible configurations
+    # for defining callbacks.
     def after_transition(options = {}, &block)
       add_callback(:after, options.is_a?(Hash) ? options : {:do => options}, &block)
+    end
+    
+    # Marks the given object as invalid after failing to transition via the
+    # given event.
+    # 
+    # By default, this is a no-op.
+    def invalidate(object, event)
+    end
+    
+    # Resets an errors previously added when invalidating the given object
+    # 
+    # By default, this is a no-op.
+    def reset(object)
     end
     
     # Runs a transaction, rolling back any changes if the yielded block fails.
@@ -922,21 +1064,30 @@ module StateMachine
     #   Default is "png'.
     # * <tt>:font</tt> - The name of the font to draw state names in.
     #   Default is "Arial".
+    # * <tt>:orientation</tt> - The direction of the graph ("portrait" or
+    #   "landscape").  Default is "portrait".
+    # * <tt>:output</tt> - Whether to generate the output of the graph
     def draw(options = {})
       options = {
         :name => "#{owner_class.name}_#{attribute}",
         :path => '.',
         :format => 'png',
-        :font => 'Arial'
+        :font => 'Arial',
+        :orientation => 'portrait',
+        :output => true
       }.merge(options)
-      assert_valid_keys(options, :name, :font, :path, :format)
+      assert_valid_keys(options, :name, :path, :format, :font, :orientation, :output)
       
       begin
         # Load the graphviz library
         require 'rubygems'
         require 'graphviz'
         
-        graph = GraphViz.new('G', :output => options[:format], :file => File.join(options[:path], "#{options[:name]}.#{options[:format]}"))
+        graph = GraphViz.new('G',
+          :output => options[:format],
+          :file => File.join(options[:path], "#{options[:name]}.#{options[:format]}"),
+          :rankdir => options[:orientation] == 'landscape' ? 'LR' : 'TB'
+        )
         
         # Add nodes
         states.by_priority.each do |state|
@@ -951,7 +1102,7 @@ module StateMachine
         end
         
         # Generate the graph
-        graph.output
+        graph.output if options[:output]
         graph
       rescue LoadError
         $stderr.puts 'Cannot draw the machine. `gem install ruby-graphviz` and try again.'
@@ -976,13 +1127,9 @@ module StateMachine
         define_attribute_accessor
         define_attribute_predicate
         
-        attribute = self.attribute
-        
-        owner_class.class_eval do
-          # Gets the state name for the current value
-          define_method("#{attribute}_name") do
-            self.class.state_machines[attribute].state_for(self).name
-          end
+        # Gets the state name for the current value
+        define_instance_method("#{attribute}_name") do |machine, object|
+          machine.state_for(object).name
         end
       end
       
@@ -990,22 +1137,17 @@ module StateMachine
       def define_attribute_accessor
         attribute = self.attribute
         
-        owner_class.class_eval do
-          attr_reader attribute unless method_defined?(attribute) || private_method_defined?(attribute)
-          attr_writer attribute unless method_defined?("#{attribute}=") || private_method_defined?("#{attribute}=")
+        @instance_helper_module.class_eval do
+          attr_reader attribute
+          attr_writer attribute
         end
       end
       
       # Adds predicate method to the owner class for determining the name of the
       # current state
       def define_attribute_predicate
-        attribute = self.attribute
-        
-        owner_class.class_eval do
-          # Checks whether the current state is a given value
-          define_method("#{attribute}?") do |state|
-            self.class.state_machines[attribute].state?(self, state)
-          end unless method_defined?("#{attribute}?") || private_method_defined?("#{attribute}?")
+        define_instance_method("#{attribute}?") do |machine, object, state|
+          machine.state?(object, state)
         end
       end
       
@@ -1015,24 +1157,21 @@ module StateMachine
       # automatically determined by either calling +pluralize+ on the attribute
       # name or adding an "s" to the end of the name.
       def define_scopes(custom_plural = nil)
-        attribute = self.attribute
         plural = custom_plural || (attribute.to_s.respond_to?(:pluralize) ? attribute.to_s.pluralize : "#{attribute}s")
         
         [attribute, plural].uniq.each do |name|
           [:with, :without].each do |kind|
             method = "#{kind}_#{name}"
             
-            if !owner_class.respond_to?(method) && scope = send("create_#{kind}_scope", method)
-              (class << owner_class; self; end).class_eval do
-                # Converts state names to their corresponding values so that
-                # they can be looked up properly
-                define_method(method) do |*states|
-                  machine_states = state_machines[attribute].states
-                  values = states.flatten.map {|state| machine_states.fetch(state).value}
-                  
-                  # Invoke the original scope implementation
-                  scope.call(self, values)
-                end
+            if scope = send("create_#{kind}_scope", method)
+              # Converts state names to their corresponding values so that they
+              # can be looked up properly
+              define_class_method(method) do |machine, klass, *states|
+                machine_states = machine.states
+                values = states.flatten.map {|state| machine_states.fetch(state).value}
+                
+                # Invoke the original scope implementation
+                scope.call(klass, values)
               end
             end
           end
@@ -1070,6 +1209,12 @@ module StateMachine
           
           state
         end
+      end
+      
+      # Generates the message to use when invalidating the given object after
+      # failing to transition on a specific event
+      def invalid_message(object, event)
+        (@invalid_message || self.class.default_invalid_message) % [event.name, state_for(object).name]
       end
   end
 end

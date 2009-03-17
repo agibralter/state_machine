@@ -3,6 +3,8 @@ require File.expand_path(File.dirname(__FILE__) + '/../../test_helper')
 begin
   # Load library
   require 'rubygems'
+  
+  gem 'activerecord', ENV['AR_VERSION'] ? "=#{ENV['AR_VERSION']}" : '>=2.1.0'
   require 'active_record'
   
   FIXTURES_ROOT = File.dirname(__FILE__) + '/../../fixtures/'
@@ -11,13 +13,6 @@ begin
   require 'active_support/test_case'
   require 'active_record/fixtures'
   require 'active_record/test_case'
-  
-  # Set default fixtures configuration
-  ActiveSupport::TestCase.class_eval do
-    self.fixture_path = File.dirname(__FILE__) + '/../../fixtures/'
-    self.use_instantiated_fixtures  = false
-    self.use_transactional_fixtures = true
-  end
   
   # Establish database connection
   ActiveRecord::Base.establish_connection({'adapter' => 'sqlite3', 'database' => ':memory:'})
@@ -158,6 +153,27 @@ begin
         end
         
         assert_equal 1, @model.count
+      end
+      
+      def test_should_invalidate_using_errors
+        I18n.backend = I18n::Backend::Simple.new if Object.const_defined?(:I18n)
+        
+        record = @model.new
+        record.state = 'parked'
+        
+        @machine.invalidate(record, StateMachine::Event.new(@machine, :park))
+        
+        assert record.errors.invalid?(:state)
+        assert_equal 'cannot be transitioned via :park from :parked', record.errors.on(:state)
+      end
+      
+      def test_should_clear_errors_on_reset
+        record = @model.new
+        record.state = 'parked'
+        record.errors.add(:state, 'is invalid')
+        
+        @machine.reset(record)
+        assert_nil record.errors.on(:id)
       end
       
       def test_should_not_override_the_column_reader
@@ -486,6 +502,35 @@ begin
       end
     end
     
+    class MachineWithStateDrivenValidationsTest < ActiveRecord::TestCase
+      def setup
+        @model = new_model do
+          attr_accessor :seatbelt
+        end
+        
+        @machine = StateMachine::Machine.new(@model)
+        @machine.state :first_gear, :second_gear do
+          validates_presence_of :seatbelt
+        end
+        @machine.other_states :parked
+      end
+      
+      def test_should_be_valid_if_validation_fails_outside_state_scope
+        record = @model.new(:state => 'parked', :seatbelt => nil)
+        assert record.valid?
+      end
+      
+      def test_should_be_invalid_if_validation_fails_within_state_scope
+        record = @model.new(:state => 'first_gear', :seatbelt => nil)
+        assert !record.valid?
+      end
+      
+      def test_should_be_valid_if_validation_succeeds_within_state_scope
+        record = @model.new(:state => 'second_gear', :seatbelt => true)
+        assert record.valid?
+      end
+    end
+    
     class MachineWithFailedAfterCallbacksTest < ActiveRecord::TestCase
        def setup
         @after_count = 0
@@ -689,7 +734,75 @@ begin
         assert_equal expected, @notifications
       end
     end
+    
+    if Object.const_defined?(:I18n)
+      class MachineWithInternationalizationTest < ActiveRecord::TestCase
+        def setup
+          I18n.backend = I18n::Backend::Simple.new
+          
+          # Initialize the backend
+          I18n.backend.translate(:en, 'activerecord.errors.messages.invalid_transition', :event => 'ignite', :value => 'idling')
+          
+          @model = new_model
+        end
+        
+        def test_should_invalidate_using_i18n_default
+          I18n.backend.store_translations(:en, {
+            :activerecord => {
+              :errors => {
+                :messages => {
+                  :invalid_transition => 'cannot {{event}} when {{value}}'
+                }
+              }
+            }
+          })
+          
+          machine = StateMachine::Machine.new(@model)
+          machine.state :parked, :idling
+          event = StateMachine::Event.new(machine, :ignite)
+          
+          record = @model.new(:state => 'idling')
+          
+          machine.invalidate(record, event)
+          assert_equal 'cannot ignite when idling', record.errors.on(:state)
+        end
+        
+        def test_should_invalidate_using_customized_i18n_key_if_specified
+          I18n.backend.store_translations(:en, {
+            :activerecord => {
+              :errors => {
+                :messages => {
+                  :bad_transition => 'cannot {{event}} when {{value}}'
+                }
+              }
+            }
+          })
+          
+          machine = StateMachine::Machine.new(@model, :invalid_message => :bad_transition)
+          machine.state :parked, :idling
+          event = StateMachine::Event.new(machine, :ignite)
+          
+          record = @model.new(:state => 'idling')
+          
+          machine.invalidate(record, event)
+          assert_equal 'cannot ignite when idling', record.errors.on(:state)
+        end
+      end
+      
+      def test_should_invalidate_using_customized_i18n_string_if_specified
+        machine = StateMachine::Machine.new(@model, :invalid_message => 'cannot {{event}} when {{value}}')
+        machine.state :parked, :idling
+        event = StateMachine::Event.new(machine, :ignite)
+        
+        record = @model.new(:state => 'idling')
+        
+        machine.invalidate(record, event)
+        assert_equal 'cannot ignite when idling', record.errors.on(:state)
+      end
+    else
+      $stderr.puts 'Skipping ActiveRecord I18n tests. `gem install active_record` >= v2.2.0 and try again.'
+    end
   end
 rescue LoadError
-  $stderr.puts 'Skipping ActiveRecord tests. `gem install active_record` and try again.'
+  $stderr.puts "Skipping ActiveRecord tests. `gem install activerecord#{" -v #{ENV['AR_VERSION']}" if ENV['AR_VERSION']}` and try again."
 end

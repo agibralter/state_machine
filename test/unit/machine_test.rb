@@ -250,6 +250,14 @@ class MachineWithoutIntegrationTest < Test::Unit::TestCase
     
     assert @yielded
   end
+  
+  def test_invalidation_should_do_nothing
+    assert_nil @machine.invalidate(@object, StateMachine::Event.new(@machine, :park))
+  end
+  
+  def test_reset_should_do_nothing
+    assert_nil @machine.reset(@object)
+  end
 end
 
 class MachineWithCustomIntegrationTest < Test::Unit::TestCase
@@ -328,7 +336,6 @@ class MachineWithCustomPluralTest < Test::Unit::TestCase
   def setup
     @integration = Module.new do
       class << self; attr_accessor :with_scopes, :without_scopes; end
-      @initialized = false
       @with_scopes = []
       @without_scopes = []
       
@@ -360,9 +367,43 @@ class MachineWithCustomPluralTest < Test::Unit::TestCase
   end
 end
 
+class MachineWithCustomInvalidationTest < Test::Unit::TestCase
+  def setup
+    @integration = Module.new do
+      def invalidate(object, event)
+        object.error = invalid_message(object, event)
+      end
+    end
+    StateMachine::Integrations.const_set('Custom', @integration)
+    
+    @klass = Class.new do
+      attr_accessor :error
+    end
+    
+    @machine = StateMachine::Machine.new(@klass, :integration => :custom, :invalid_message => 'cannot %s when %s')
+    @machine.state :parked
+    
+    @object = @klass.new
+    @object.state = 'parked'
+  end
+  
+  def test_use_custom_message
+    @machine.invalidate(@object, StateMachine::Event.new(@machine, :park))
+    assert_equal 'cannot park when parked', @object.error
+  end
+  
+  def teardown
+    StateMachine::Integrations.send(:remove_const, 'Custom')
+  end
+end
+
 class MachineTest < Test::Unit::TestCase
   def test_should_raise_exception_if_invalid_option_specified
     assert_raise(ArgumentError) {StateMachine::Machine.new(Class.new, :invalid => true)}
+  end
+  
+  def test_should_not_raise_exception_if_custom_invalid_message_specified
+    assert_nothing_raised {StateMachine::Machine.new(Class.new, :invalid_message => 'custom')}
   end
   
   def test_should_evaluate_a_block_during_initialization
@@ -372,6 +413,16 @@ class MachineTest < Test::Unit::TestCase
     end
     
     assert called
+  end
+  
+  def test_should_provide_matcher_helpers_during_initialization
+    matchers = []
+    
+    StateMachine::Machine.new(Class.new) do
+      matchers = [all, any, same]
+    end
+    
+    assert_equal [StateMachine::AllMatcher.instance, StateMachine::AllMatcher.instance, StateMachine::LoopbackMatcher.instance], matchers
   end
 end
 
@@ -485,96 +536,102 @@ class MachineAfterChangingInitialState < Test::Unit::TestCase
   end
 end
 
-class MachineWithConflictingAttributeAccessorsTest < Test::Unit::TestCase
+class MachineWithInstanceHelpersTest < Test::Unit::TestCase
   def setup
-    @klass = Class.new do
-      attr_accessor :status
-      
-      def state
-        status
-      end
-      
-      def state=(value)
-        self.status = value
-      end
-      
-      def state?
-        true
-      end
-      
-      def state_name
-        :parked
-      end
-    end
+    @klass = Class.new
     @machine = StateMachine::Machine.new(@klass)
     @object = @klass.new
   end
   
-  def test_should_not_define_attribute_reader
-    @object.status = 'parked'
+  def test_should_not_redefine_existing_public_methods
+    @klass.class_eval do
+      def state
+        'parked'
+      end
+    end
+    
+    @machine.define_instance_method(:state) {}
     assert_equal 'parked', @object.state
   end
   
-  def test_should_not_define_attribute_writer
-    @object.state = 'parked'
-    assert_equal 'parked', @object.status
-  end
-  
-  def test_should_not_define_attribute_predicate
-    assert @object.state?
-  end
-  
-  def test_should_define_attribute_name_reader
-    assert_nil @object.state_name
-  end
-end
-
-class MachineWithConflictingPrivateAttributeAccessorsTest < Test::Unit::TestCase
-  def setup
-    @klass = Class.new do
-      attr_accessor :status
-      
-      private
+  def test_should_not_redefine_existing_protected_methods
+    @klass.class_eval do
+      protected
         def state
-          status
-        end
-        
-        def state=(value)
-          self.status = value
-        end
-        
-        def state?
-          true
-        end
-        
-        def state_name
-          :parked
+          'parked'
         end
     end
-    @machine = StateMachine::Machine.new(@klass)
-    @object = @klass.new
-  end
-  
-  def test_should_not_define_attribute_reader
-    @object.status = 'parked'
+    
+    @machine.define_instance_method(:state) {}
     assert_equal 'parked', @object.send(:state)
   end
   
-  def test_should_not_define_attribute_writer
-    @object.send(:state=, 'parked')
-    assert_equal 'parked', @object.status
+  def test_should_not_redefine_existing_private_methods
+    @klass.class_eval do
+      private
+        def state
+          'parked'
+        end
+    end
+    
+    @machine.define_instance_method(:state) {}
+    assert_equal 'parked', @object.send(:state)
   end
   
-  def test_should_not_define_attribute_predicate
-    assert @object.send(:state?)
-  end
-  
-  def test_should_define_attribute_name_reader
-    assert_nil @object.send(:state_name)
+  def test_should_define_nonexistent_methods
+    @machine.define_instance_method(:state) {'parked'}
+    assert_equal 'parked', @object.state
   end
 end
 
-class MachineWithConflictingScopesTest < Test::Unit::TestCase
+class MachineWithClassHelpersTest < Test::Unit::TestCase
+  def setup
+    @klass = Class.new
+    @machine = StateMachine::Machine.new(@klass)
+  end
+  
+  def test_should_not_redefine_existing_public_methods
+    class << @klass
+      def states
+        []
+      end
+    end
+    
+    @machine.define_class_method(:states) {}
+    assert_equal [], @klass.states
+  end
+  
+  def test_should_not_redefine_existing_protected_methods
+    class << @klass
+      protected
+        def states
+          []
+        end
+    end
+    
+    @machine.define_class_method(:states) {}
+    assert_equal [], @klass.send(:states)
+  end
+  
+  def test_should_not_redefine_existing_private_methods
+    class << @klass
+      private
+        def states
+          []
+        end
+    end
+    
+    @machine.define_class_method(:states) {}
+    assert_equal [], @klass.send(:states)
+  end
+  
+  def test_should_define_nonexistent_methods
+    @machine.define_class_method(:states) {[]}
+    assert_equal [], @klass.states
+  end
+end
+
+class MachineWithConflictingHelpersTest < Test::Unit::TestCase
   def setup
     @klass = Class.new do
       def self.with_state
@@ -592,35 +649,122 @@ class MachineWithConflictingScopesTest < Test::Unit::TestCase
       def self.without_states
         :without_states
       end
-    end
-    
-    integration = Module.new do
-      def define_with_scope(name)
-        raise ArgumentError, 'should not define a with scope'
+      
+      attr_accessor :status
+      
+      def state
+        'parked'
       end
       
-      def define_without_scope(name)
-        raise ArgumentError, 'should not define a without scope'
+      def state=(value)
+        self.status = value
+      end
+      
+      def state?
+        true
+      end
+      
+      def state_name
+        :parked
       end
     end
-    StateMachine::Integrations.const_set('Custom', integration)
+    
+    StateMachine::Integrations.const_set('Custom', Module.new do
+      def create_with_scope(name)
+        lambda {|klass, values| []}
+      end
+      
+      def create_without_scope(name)
+        lambda {|klass, values| []}
+      end
+    end)
+    
     @machine = StateMachine::Machine.new(@klass, :integration => :custom)
+    @machine.state :parked, :idling
+    @object = @klass.new
   end
   
-  def test_should_not_define_singular_with_scope
+  def test_should_not_redefine_singular_with_scope
     assert_equal :with_state, @klass.with_state
   end
   
-  def test_should_not_define_plural_with_scope
+  def test_should_not_redefine_plural_with_scope
     assert_equal :with_states, @klass.with_states
   end
   
-  def test_should_not_define_singular_without_scope
+  def test_should_not_redefine_singular_without_scope
     assert_equal :without_state, @klass.without_state
   end
   
-  def test_should_not_define_plural_without_scope
+  def test_should_not_redefine_plural_without_scope
     assert_equal :without_states, @klass.without_states
+  end
+  
+  def test_should_not_redefine_attribute_writer
+    assert_equal 'parked', @object.state
+  end
+  
+  def test_should_not_redefine_attribute_writer
+    @object.state = 'parked'
+    assert_equal 'parked', @object.status
+  end
+  
+  def test_should_not_define_attribute_predicate
+    assert @object.state?
+  end
+  
+  def test_should_not_redefine_attribute_name_reader
+    assert_equal :parked, @object.state_name
+  end
+  
+  def test_should_allow_super_chaining
+    @klass.class_eval do
+      def self.with_state(*states)
+        super == []
+      end
+      
+      def self.with_states(*states)
+        super == []
+      end
+      
+      def self.without_state(*states)
+        super == []
+      end
+      
+      def self.without_states(*states)
+        super == []
+      end
+      
+      attr_accessor :status
+      
+      def state
+        super || 'parked'
+      end
+      
+      def state=(value)
+        super
+        self.status = value
+      end
+      
+      def state?(state)
+        super ? 1 : 0
+      end
+      
+      def state_name
+        super == :parked ? 1 : 0
+      end
+    end
+    
+    assert_equal true, @klass.with_state
+    assert_equal true, @klass.with_states
+    assert_equal true, @klass.without_state
+    assert_equal true, @klass.without_states
+    
+    assert_equal 'parked', @object.state
+    @object.state = 'idling'
+    assert_equal 'idling', @object.status
+    assert_equal 0, @object.state?(:parked)
+    assert_equal 0, @object.state_name
   end
   
   def teardown
@@ -927,6 +1071,11 @@ class MachineWithEventsTest < Test::Unit::TestCase
     assert responded
   end
   
+  def test_should_be_aliased_as_on
+    event = @machine.on(:ignite) {}
+    assert_equal :ignite, event.name
+  end
+  
   def test_should_have_events
     event = @machine.event(:ignite)
     assert_equal [event], @machine.events.to_a
@@ -954,8 +1103,8 @@ class MachineWithEventsWithTransitionsTest < Test::Unit::TestCase
     @klass = Class.new
     @machine = StateMachine::Machine.new(@klass, :initial => :parked)
     @event = @machine.event(:ignite) do
-      transition :to => :idling, :from => :parked
-      transition :to => :idling, :from => :stalled
+      transition :parked => :idling
+      transition :stalled => :idling
     end
   end
   
@@ -969,7 +1118,7 @@ class MachineWithEventsWithTransitionsTest < Test::Unit::TestCase
   
   def test_should_not_duplicate_states_defined_in_multiple_event_transitions
     @machine.event :park do
-      transition :to => :parked, :from => :idling
+      transition :idling => :parked
     end
     
     assert_equal [:parked, :idling, :stalled], @machine.states.map {|state| state.name}
@@ -977,7 +1126,7 @@ class MachineWithEventsWithTransitionsTest < Test::Unit::TestCase
   
   def test_should_track_state_from_new_events
     @machine.event :shift_up do
-      transition :to => :first_gear, :from => :idling
+      transition :idling => :first_gear
     end
     
     assert_equal [:parked, :idling, :stalled, :first_gear], @machine.states.map {|state| state.name}
@@ -989,7 +1138,7 @@ class MachineWithMultipleEventsTest < Test::Unit::TestCase
     @klass = Class.new
     @machine = StateMachine::Machine.new(@klass, :initial => :parked)
     @park, @shift_down = @machine.event(:park, :shift_down) do
-      transition :to => :parked, :from => :first_gear
+      transition :first_gear => :parked
     end
   end
   
@@ -1022,16 +1171,15 @@ class MachineWithTransitionCallbacksTest < Test::Unit::TestCase
     
     @machine = StateMachine::Machine.new(@klass, :initial => :parked)
     @event = @machine.event :ignite do
-      transition :to => :idling, :from => :parked
+      transition :parked => :idling
     end
     
     @object = @klass.new
     @object.callbacks = []
   end
   
-  def test_should_raise_exception_if_invalid_option_specified
-    exception = assert_raise(ArgumentError) {@machine.before_transition :invalid => true, :do => lambda {}}
-    assert_equal 'Invalid key(s): invalid', exception.message
+  def test_should_not_raise_exception_if_implicit_option_specified
+    assert_nothing_raised {@machine.before_transition :invalid => true, :do => lambda {}}
   end
   
   def test_should_raise_exception_if_do_option_not_specified
@@ -1095,17 +1243,25 @@ class MachineWithTransitionCallbacksTest < Test::Unit::TestCase
     assert_equal [:park], @object.callbacks
   end
   
+  def test_should_support_implicit_requirement
+    @machine.before_transition :parked => :idling, :do => lambda {|object| object.callbacks << :parked}
+    @machine.before_transition :idling => :parked, :do => lambda {|object| object.callbacks << :idling}
+    
+    @event.fire(@object)
+    assert_equal [:parked], @object.callbacks
+  end
+  
   def test_should_track_states_defined_in_transition_callbacks
-    @machine.before_transition :from => :parked, :to => :idling, :do => lambda {}
-    @machine.after_transition :from => :first_gear, :to => :second_gear, :do => lambda {}
+    @machine.before_transition :parked => :idling, :do => lambda {}
+    @machine.after_transition :first_gear => :second_gear, :do => lambda {}
     
     assert_equal [:parked, :idling, :first_gear, :second_gear], @machine.states.map {|state| state.name}
   end
   
   def test_should_not_duplicate_states_defined_in_multiple_event_transitions
-    @machine.before_transition :from => :parked, :to => :idling, :do => lambda {}
-    @machine.after_transition :from => :first_gear, :to => :second_gear, :do => lambda {}
-    @machine.after_transition :from => :parked, :to => :idling, :do => lambda {}
+    @machine.before_transition :parked => :idling, :do => lambda {}
+    @machine.after_transition :first_gear => :second_gear, :do => lambda {}
+    @machine.after_transition :parked => :idling, :do => lambda {}
     
     assert_equal [:parked, :idling, :first_gear, :second_gear], @machine.states.map {|state| state.name}
   end
@@ -1155,11 +1311,11 @@ class MachineWithNamespaceTest < Test::Unit::TestCase
     @klass = Class.new
     @machine = StateMachine::Machine.new(@klass, :namespace => 'car', :initial => :parked) do
       event :ignite do
-        transition :to => :idling, :from => :parked
+        transition :parked => :idling
       end
       
       event :park do
-        transition :to => :parked, :from => :idling
+        transition :idling => :parked
       end
     end
     @object = @klass.new
@@ -1332,7 +1488,7 @@ begin
       end
       @machine = StateMachine::Machine.new(@klass, :initial => :parked)
       @machine.event :ignite do
-        transition :to => :idling, :from => :parked
+        transition :parked => :idling
       end
     end
     
@@ -1341,31 +1497,34 @@ begin
     end
     
     def test_should_save_file_with_class_name_by_default
-      @machine.draw
-      assert File.exist?('./Vehicle_state.png')
-    ensure
-      FileUtils.rm('./Vehicle_state.png')
+      graph = @machine.draw(:output => false)
+      assert_equal './Vehicle_state.png', graph.instance_variable_get('@filename')
     end
     
     def test_should_allow_base_name_to_be_customized
-      @machine.draw(:name => 'machine')
-      assert File.exist?('./machine.png')
-    ensure
-      FileUtils.rm('./machine.png')
+      graph = @machine.draw(:name => 'machine', :output => false)
+      assert_equal './machine.png', graph.instance_variable_get('@filename')
     end
     
     def test_should_allow_format_to_be_customized
-      @machine.draw(:format => 'jpg')
-      assert File.exist?('./Vehicle_state.jpg')
-    ensure
-      FileUtils.rm('./Vehicle_state.jpg')
+      graph = @machine.draw(:format => 'jpg', :output => false)
+      assert_equal './Vehicle_state.jpg', graph.instance_variable_get('@filename')
+      assert_equal 'jpg', graph.instance_variable_get('@format')
     end
     
     def test_should_allow_path_to_be_customized
-      @machine.draw(:path => "#{File.dirname(__FILE__)}/")
-      assert File.exist?("#{File.dirname(__FILE__)}/Vehicle_state.png")
-    ensure
-      FileUtils.rm("#{File.dirname(__FILE__)}/Vehicle_state.png")
+      graph = @machine.draw(:path => "#{File.dirname(__FILE__)}/", :output => false)
+      assert_equal "#{File.dirname(__FILE__)}/Vehicle_state.png", graph.instance_variable_get('@filename')
+    end
+    
+    def test_should_allow_orientation_to_be_landscape
+      graph = @machine.draw(:orientation => 'landscape', :output => false)
+      assert_equal 'LR', graph['rankdir']
+    end
+    
+    def test_should_allow_orientation_to_be_portrait
+      graph = @machine.draw(:orientation => 'portrait', :output => false)
+      assert_equal 'TB', graph['rankdir']
     end
   end
   
@@ -1376,11 +1535,19 @@ begin
       end
       @machine = StateMachine::Machine.new(@klass, :state_id, :initial => :parked)
       @machine.event :ignite do
-        transition :to => :idling, :from => :parked
+        transition :parked => :idling
       end
       @machine.state :parked, :value => 1
       @machine.state :idling, :value => 2
-      @machine.draw
+      @graph = @machine.draw
+    end
+    
+    def test_should_draw_all_states
+      assert_equal 3, @graph.node_count
+    end
+    
+    def test_should_draw_all_events
+      assert_equal 2, @graph.edge_count
     end
     
     def test_should_draw_machine
@@ -1397,10 +1564,18 @@ begin
       end
       @machine = StateMachine::Machine.new(@klass, :initial => :parked)
       @machine.event :ignite do
-        transition :to => :idling, :from => :parked
+        transition :parked => :idling
       end
       @machine.state :parked, :value => nil
-      @machine.draw
+      @graph = @machine.draw
+    end
+    
+    def test_should_draw_all_states
+      assert_equal 3, @graph.node_count
+    end
+    
+    def test_should_draw_all_events
+      assert_equal 2, @graph.edge_count
     end
     
     def test_should_draw_machine
@@ -1417,10 +1592,18 @@ begin
       end
       @machine = StateMachine::Machine.new(@klass, :initial => :parked)
       @machine.event :activate do
-        transition :to => :idling, :from => :parked
+        transition :parked => :idling
       end
       @machine.state :idling, :value => lambda {Time.now}
-      @machine.draw
+      @graph = @machine.draw
+    end
+    
+    def test_should_draw_all_states
+      assert_equal 3, @graph.node_count
+    end
+    
+    def test_should_draw_all_events
+      assert_equal 2, @graph.edge_count
     end
     
     def test_should_draw_machine
@@ -1437,7 +1620,7 @@ begin
       end
       @machine = StateMachine::Machine.new(@klass)
       @machine.event :ignite do
-        transition :to => :idling, :from => :parked
+        transition :parked => :idling
       end
     end
     

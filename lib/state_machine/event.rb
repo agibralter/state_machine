@@ -1,6 +1,7 @@
 require 'state_machine/transition'
 require 'state_machine/guard'
 require 'state_machine/assertions'
+require 'state_machine/matcher_helpers'
 
 module StateMachine
   # An event defines an action that transitions an attribute from one state to
@@ -8,12 +9,16 @@ module StateMachine
   # guards configured for the event.
   class Event
     include Assertions
+    include MatcherHelpers
     
     # The state machine for which this event is defined
     attr_accessor :machine
     
-    # The name of the action that fires the event
+    # The name of the event
     attr_reader :name
+    
+    # The fully-qualified name of the event, scoped by the machine's namespace 
+    attr_reader :qualified_name
     
     # The list of guards that determine what state this event transitions
     # objects to when fired
@@ -27,6 +32,7 @@ module StateMachine
     def initialize(machine, name) #:nodoc:
       @machine = machine
       @name = name
+      @qualified_name = machine.namespace ? :"#{name}_#{machine.namespace}" : name
       @guards = []
       @known_states = []
       
@@ -41,15 +47,75 @@ module StateMachine
       @known_states = @known_states.dup
     end
     
-    # Creates a new transition that will be evaluated when the event is fired.
+    # Creates a new transition that determines what to change the current state
+    # to when this event fires.
     # 
-    # Configuration options:
+    # == Defining transitions
+    # 
+    # The options for a new transition uses the Hash syntax to map beginning
+    # states to ending states.  For example,
+    # 
+    #   transition :parked => :idling, :idling => :first_gear
+    # 
+    # In this case, when the event is fired, this transition will cause the
+    # state to be +idling+ if it's current state is +parked+ or +first_gear+ if
+    # it's current state is +idling+.
+    # 
+    # To help defining these implicit transitions, a set of helpers are available
+    # for defining slightly more complex matching:
+    # * <tt>all</tt> - Matches every state in the machine
+    # * <tt>all - [:parked, :idling, ...]</tt> - Matches every state except those specified
+    # * <tt>any</tt> - An alias for +all+ (matches every state in the machine)
+    # * <tt>same</tt> - Matches the same state being transitioned from
+    # 
+    # See StateMachine::MatcherHelpers for more information.
+    # 
+    # Examples:
+    # 
+    #   transition all => nil                               # Transitions to nil regardless of the current state
+    #   transition all => :idling                           # Transitions to :idling regardless of the current state
+    #   transition all - [:idling, :first_gear] => :idling  # Transitions every state but :idling and :first_gear to :idling
+    #   transition nil => :idling                           # Transitions to :idling from the nil state
+    #   transition :parked => :idling                       # Transitions to :idling if :parked
+    #   transition [:parked, :stalled] => :idling           # Transitions to :idling if :parked or :stalled
+    #   
+    #   transition :parked => same                          # Loops :parked back to :parked
+    #   transition [:parked, :stalled] => same              # Loops either :parked or :stalled back to the same state
+    #   transition all - :parked => same                    # Loops every state but :parked back to the same state
+    # 
+    # == Verbose transitions
+    # 
+    # Transitions can also be defined use an explicit set of deprecated
+    # configuration options:
     # * <tt>:from</tt> - A state or array of states that can be transitioned from.
     #   If not specified, then the transition can occur for *any* state.
     # * <tt>:to</tt> - The state that's being transitioned to.  If not specified,
     #   then the transition will simply loop back (i.e. the state will not change).
     # * <tt>:except_from</tt> - A state or array of states that *cannot* be
     #   transitioned from.
+    # 
+    # Examples:
+    # 
+    #   transition :to => nil
+    #   transition :to => :idling
+    #   transition :except_from => [:idling, :first_gear], :to => :idling
+    #   transition :from => nil, :to => :idling
+    #   transition :from => [:parked, :stalled], :to => :idling
+    #   
+    #   transition :from => :parked
+    #   transition :from => [:parked, :stalled]
+    #   transition :except_from => :parked
+    # 
+    # Notice that the above examples are the verbose equivalent of the examples
+    # described initially.
+    # 
+    # == Conditions
+    # 
+    # In addition to the state requirements for each transition, a condition
+    # can also be defined to help determine whether that transition is
+    # available.  These options will work on both the normal and verbose syntax.
+    # 
+    # Configuration options:
     # * <tt>:if</tt> - A method, proc or string to call to determine if the
     #   transition should occur (e.g. :if => :moving?, or :if => lambda {|vehicle| vehicle.speed > 60}).
     #   The condition should return or evaluate to true or false.
@@ -57,26 +123,25 @@ module StateMachine
     #   transition should not occur (e.g. :unless => :stopped?, or :unless => lambda {|vehicle| vehicle.speed <= 60}).
     #   The condition should return or evaluate to true or false.
     # 
+    # Examples:
+    # 
+    #   transition :parked => :idling, :if => :moving?
+    #   transition :parked => :idling, :unless => :stopped?
+    #   
+    #   transition :from => :parked, :to => :idling, :if => :moving?
+    #   transition :from => :parked, :to => :idling, :unless => :stopped?
+    # 
     # == Order of operations
     # 
     # Transitions are evaluated in the order in which they're defined.  As a
     # result, if more than one transition applies to a given object, then the
     # first transition that matches will be performed.
-    # 
-    # == Examples
-    # 
-    #   transition :from => nil, :to => :parked
-    #   transition :from => [:first_gear, :reverse]
-    #   transition :except_from => :parked
-    #   transition :to => nil
-    #   transition :to => :parked
-    #   transition :to => :parked, :from => :first_gear
-    #   transition :to => :parked, :from => [:first_gear, :reverse]
-    #   transition :to => :parked, :from => :first_gear, :if => :moving?
-    #   transition :to => :parked, :from => :first_gear, :unless => :stopped?
-    #   transition :to => :parked, :except_from => :parked
     def transition(options)
-      assert_valid_keys(options, :from, :to, :except_from, :if, :unless)
+      raise ArgumentError, 'Must specify as least one transition requirement' if options.empty?
+      
+      # Only a certain subset of explicit options are allowed for transition
+      # requirements
+      assert_valid_keys(options, :from, :to, :except_from, :if, :unless) if (options.keys - [:from, :to, :on, :except_from, :except_to, :except_on, :if, :unless]).empty?
       
       guards << guard = Guard.new(options)
       @known_states |= guard.known_states
@@ -96,11 +161,17 @@ module StateMachine
     def next_transition(object)
       from = machine.state_for(object).name
       
-      if guard = guards.find {|guard| guard.matches?(object, :from => from)}
-        # Guard allows for the transition to occur
-        to = guard.state_requirement[:to].values.any? ? guard.state_requirement[:to].values.first : from
-        Transition.new(object, machine, name, from, to)
+      guards.each do |guard|
+        if match = guard.match(object, :from => from)
+          # Guard allows for the transition to occur
+          to = match[:to].values.empty? ? from : match[:to].values.first
+          
+          return Transition.new(object, machine, name, from, to)
+        end
       end
+      
+      # No transition matched
+      nil
     end
     
     # Attempts to perform the next available transition on the given object.
@@ -110,18 +181,14 @@ module StateMachine
     # Any additional arguments are passed to the StateMachine::Transition#perform
     # instance method.
     def fire(object, *args)
+      machine.reset(object)
+      
       if transition = next_transition(object)
         transition.perform(*args)
       else
+        machine.invalidate(object, self)
         false
       end
-    end
-    
-    # Attempts to perform the next available transition on the given object.
-    # If no transitions can be made, then a StateMachine::InvalidTransition
-    # exception will be raised, otherwise true will be returned.
-    def fire!(object, *args)
-      fire(object, *args) || raise(StateMachine::InvalidTransition, "Cannot transition #{machine.attribute} via :#{name} from #{machine.state_for(object).name.inspect}")
     end
     
     # Draws a representation of this event on the given graph.  This will
@@ -139,11 +206,13 @@ module StateMachine
     # For example,
     # 
     #   event = StateMachine::Event.new(machine, :park)
-    #   event.transition :to => :parked, :from => :idling
-    #   event   # => #<StateMachine::Event name=:park transitions=[:idling => :parked]>
+    #   event.transition all - :idling => :parked, :idling => same
+    #   event   # => #<StateMachine::Event name=:park transitions=[all - :idling => :parked, :idling => same]>
     def inspect
       transitions = guards.map do |guard|
-        "#{guard.state_requirement[:from].description} => #{guard.state_requirement[:to].description}"
+        guard.state_requirements.map do |state_requirement|
+          "#{state_requirement[:from].description} => #{state_requirement[:to].description}"
+        end * ', '
       end
       
       "#<#{self.class} name=#{name.inspect} transitions=[#{transitions * ', '}]>"
@@ -153,31 +222,25 @@ module StateMachine
       # Add the various instance methods that can transition the object using
       # the current event
       def add_actions
-        attribute = machine.attribute
-        qualified_name = name = self.name
-        qualified_name = "#{name}_#{machine.namespace}" if machine.namespace
+        # Checks whether the event can be fired on the current object
+        machine.define_instance_method("can_#{qualified_name}?") do |machine, object|
+          machine.event(name).can_fire?(object)
+        end
         
-        machine.owner_class.class_eval do
-          # Checks whether the event can be fired on the current object
-          define_method("can_#{qualified_name}?") do
-            self.class.state_machines[attribute].event(name).can_fire?(self)
-          end
-          
-          # Gets the next transition that would be performed if the event were
-          # fired now
-          define_method("next_#{qualified_name}_transition") do
-            self.class.state_machines[attribute].event(name).next_transition(self)
-          end
-          
-          # Fires the event
-          define_method(qualified_name) do |*args|
-            self.class.state_machines[attribute].event(name).fire(self, *args)
-          end
-          
-          # Fires the event, raising an exception if it fails
-          define_method("#{qualified_name}!") do |*args|
-            self.class.state_machines[attribute].event(name).fire!(self, *args)
-          end
+        # Gets the next transition that would be performed if the event were
+        # fired now
+        machine.define_instance_method("next_#{qualified_name}_transition") do |machine, object|
+          machine.event(name).next_transition(object)
+        end
+        
+        # Fires the event
+        machine.define_instance_method(qualified_name) do |machine, object, *args|
+          machine.event(name).fire(object, *args)
+        end
+        
+        # Fires the event, raising an exception if it fails
+        machine.define_instance_method("#{qualified_name}!") do |machine, object, *args|
+          object.send(qualified_name, *args) || raise(StateMachine::InvalidTransition, "Cannot transition #{machine.attribute} via :#{name} from #{machine.state_for(object).name.inspect}")
         end
       end
   end

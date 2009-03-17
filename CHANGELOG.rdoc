@@ -1,5 +1,32 @@
 == master
 
+* Use generated non-bang event when running bang version so that overriding one affects the other
+* Provide access to arguments passed into an event from transition callbacks via Transition#args
+
+== 0.6.3 / 2008-03-10
+
+* Add support for customizing the graph's orientation
+* Use the standard visualizations for initial (open arrow) and final (double circle) states
+* Highlight final states in GraphViz drawings
+
+== 0.6.2 / 2009-03-08
+
+* Make it easier to override generated instance / class methods
+
+== 0.6.1 / 2009-03-07
+
+* Add i18n support for ActiveRecord validation errors
+* Add a validation error when failing to transition for ActiveRecord / DataMapper / Sequel integrations
+
+== 0.6.0 / 2009-03-03
+
+* Allow multiple conditions for callbacks / class behaviors
+* Add support for state-driven class behavior with :if/:unless options
+* Alias Machine#event as Machine#on
+* Fix nil from/to states not being handled properly
+* Simplify hooking callbacks into loopbacks
+* Add simplified transition/callback requirement syntax
+
 == 0.5.2 / 2009-02-17
 
 * Improve pretty-print of events

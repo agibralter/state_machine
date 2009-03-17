@@ -1,4 +1,5 @@
 require 'state_machine/assertions'
+require 'state_machine/condition_proxy'
 
 module StateMachine
   # A state defines a value that an attribute can be in after being transitioned
@@ -18,12 +19,17 @@ module StateMachine
     # The unique identifier for the state used in event and callback definitions
     attr_reader :name
     
+    # The fully-qualified identifier for the state, scoped by the machine's
+    # namespace
+    attr_reader :qualified_name
+    
     # The value that is written to a machine's attribute when an object
     # transitions into this state
     attr_writer :value
     
     # Whether or not this state is the initial state to use for new objects
     attr_accessor :initial
+    alias_method :initial?, :initial
     
     # A custom lambda block for determining whether a given value matches this
     # state
@@ -50,6 +56,7 @@ module StateMachine
       
       @machine = machine
       @name = name
+      @qualified_name = name && machine.namespace ? :"#{machine.namespace}_#{name}" : name
       @value = options.include?(:value) ? options[:value] : name && name.to_s
       @matcher = options[:if]
       @methods = {}
@@ -63,6 +70,20 @@ module StateMachine
     def initialize_copy(orig) #:nodoc:
       super
       @methods = methods.dup
+    end
+    
+    # Determines whether there are any states that can be transitioned to from
+    # this state.  If there are none, then this state is considered *final*.
+    # Any objects in a final state will remain so forever given the current
+    # machine's definition.
+    def final?
+      !machine.events.any? do |event|
+        event.guards.any? do |guard|
+          guard.state_requirements.any? do |requirement|
+            requirement[:from].matches?(name) && !requirement[:to].matches?(name, :from => name)
+          end
+        end
+      end
     end
     
     # Generates a human-readable description of this state's name / value:
@@ -119,9 +140,10 @@ module StateMachine
     def context(&block)
       owner_class = machine.owner_class
       attribute = machine.attribute
+      name = self.name
       
       # Evaluate the method definitions
-      context = Module.new
+      context = ConditionProxy.new(owner_class, lambda {|object| object.send("#{attribute}_name") == name})
       context.class_eval(&block)
       
       # Define all of the methods that were created in the module so that they
@@ -173,19 +195,22 @@ module StateMachine
     # * +label+ - The human-friendly description of the state.
     # * +width+ - The width of the node.  Always 1.
     # * +height+ - The height of the node.  Always 1.
-    # * +fixedsize+ - Whether the size of the node stays the same regardless of
-    #   its contents.  Always true.
     # * +shape+ - The actual shape of the node.  If the state is the initial
     #   state, then "doublecircle", otherwise "circle".
     # 
     # The actual node generated on the graph will be returned.
     def draw(graph)
-      graph.add_node(name ? name.to_s : 'nil',
+      node = graph.add_node(name ? name.to_s : 'nil',
         :label => description,
         :width => '1',
         :height => '1',
-        :shape => initial ? 'doublecircle' : 'ellipse'
+        :shape => final? ? 'doublecircle' : 'ellipse'
       )
+      
+      # Add open arrow for initial state
+      graph.add_edge(graph.add_node('starting_state', :shape => 'point'), node) if initial?
+      
+      node
     end
     
     # Generates a nicely formatted description of this state's contents.
@@ -195,7 +220,7 @@ module StateMachine
     #   state = StateMachine::State.new(machine, :parked, :value => 1, :initial => true)
     #   state   # => #<StateMachine::State name=:parked value=1 initial=true context=[]>
     def inspect
-      attributes = [[:name, name], [:value, @value], [:initial, initial], [:context, methods.keys]]
+      attributes = [[:name, name], [:value, @value], [:initial, initial?], [:context, methods.keys]]
       "#<#{self.class} #{attributes.map {|attr, value| "#{attr}=#{value.inspect}"} * ' '}>"
     end
     
@@ -205,15 +230,9 @@ module StateMachine
       def add_predicate
         return unless name
         
-        attribute = machine.attribute
-        qualified_name = name = self.name
-        qualified_name = "#{machine.namespace}_#{name}" if machine.namespace
-        
-        machine.owner_class.class_eval do
-          # Checks whether the current value matches this state
-          define_method("#{qualified_name}?") do
-            self.class.state_machines[attribute].state(name).matches?(send(attribute))
-          end
+        # Checks whether the current value matches this state
+        machine.define_instance_method("#{qualified_name}?") do |machine, object|
+          machine.state?(object, name)
         end
       end
   end
