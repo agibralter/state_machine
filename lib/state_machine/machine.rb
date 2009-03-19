@@ -866,6 +866,62 @@ module StateMachine
     end
     alias_method :on, :event
     
+    def define_state_transitions(*states)
+      states_hash = {}
+      if states.last.is_a?(Hash)
+        states.last.each { |state, message| states_hash[state.to_sym] = message }
+      else
+        states.each { |state| states_hash[state.to_sym] = state.to_sym }
+      end
+
+      event_names = {}
+      loops = []
+      states_hash.keys.each do |state_from|
+        event_names[state_from] = {}
+        states_hash.keys.each do |state_to|
+          event = event("#{state_from}__to__#{state_to}") do
+            transition :to => state_to, :from => state_from
+          end
+          event_names[state_from][state_to] = event.qualified_name
+          loops << event.qualified_name if state_to == state_from
+        end
+      end
+      
+      event_attr_name = self.namespace ? :"#{self.namespace}_state_transition" : :state_transition
+      
+      current_attribute = self.attribute
+      
+      @instance_helper_module.class_eval do
+        define_method(event_attr_name) do
+          current_state = self.send(current_attribute).to_sym
+          states_hash.keys.include?(current_state) ? event_names[current_state][current_state] : nil
+        end
+      end
+      
+      @instance_helper_module.class_eval do
+        define_method("#{event_attr_name}s") do
+          current_state = self.send(current_attribute).to_sym
+          states_hash.keys.include?(current_state) ? states_hash.keys.collect { |state| [states_hash[state], event_names[current_state][state]] } : []
+        end
+      end
+      
+      owner_class.class_eval do
+        validate do |model|
+          model.errors.add(event_attr_name, "invalid selection") if model.instance_variable_get("@#{event_attr_name}") == :invalid
+        end
+      end
+      
+      @instance_helper_module.class_eval do
+        define_method("#{event_attr_name}=") do |event_name|
+          current_state = self.send(current_attribute).to_sym
+          event_name = event_name.to_sym
+          unless event_names[current_state].values.include?(event_name) && (loops.include?(event_name) || self.send(event_name, false))
+            instance_variable_set("@#{event_attr_name}", :invalid)
+          end
+        end
+      end
+    end
+    
     # Creates a callback that will be invoked *before* a transition is
     # performed so long as the given requirements match the transition.
     # 
