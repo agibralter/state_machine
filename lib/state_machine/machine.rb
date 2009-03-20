@@ -7,6 +7,7 @@ require 'state_machine/event'
 require 'state_machine/callback'
 require 'state_machine/node_collection'
 require 'state_machine/state_collection'
+require 'state_machine/event_collection'
 require 'state_machine/matcher_helpers'
 
 module StateMachine
@@ -25,6 +26,32 @@ module StateMachine
   # it was defined.  See StateMachine::Machine#before_transition
   # and StateMachine::Machine#after_transition for documentation
   # on how to define new callbacks.
+  # 
+  # *Note* that callbacks only get executed within the context of an event.
+  # As a result, if a class has an initial state when it's created, any
+  # callbacks that would normally get executed when the object enters that
+  # state will *not* get triggered.
+  # 
+  # For example,
+  # 
+  #   class Vehicle < ActiveRecord::Base
+  #     state_machine :initial => :parked do
+  #       after_transition all => :parked do
+  #         raise ArgumentError
+  #       end
+  #       ...
+  #     end
+  #   end
+  #   
+  #   vehicle = Vehicle.new   # => #<Vehicle id: 1, state: "parked">
+  #   vehicle.save            # => true (no exception raised)
+  # 
+  # If you need callbacks to get triggered when an object is created, this
+  # should be done by either:
+  # * Use a <tt>before :save</tt> or equivalent hook, or
+  # * Set an initial state of nil and use the correct event to create the
+  #   object with the proper state, resulting in callbacks being triggered and
+  #   the object getting persisted
   # 
   # === Canceling callbacks
   # 
@@ -284,7 +311,7 @@ module StateMachine
       
       # Set machine configuration
       @attribute = args.first || :state
-      @events = NodeCollection.new
+      @events = EventCollection.new
       @states = StateCollection.new
       @callbacks = {:before => [], :after => []}
       @namespace = options[:namespace]
@@ -300,7 +327,7 @@ module StateMachine
       
       # Set integration-specific configurations
       @action = options.include?(:action) ? options[:action] : default_action
-      define_attribute_helpers
+      define_helpers
       define_scopes(options[:plural])
       
       # Call after hook for integration-specific extensions
@@ -371,8 +398,8 @@ module StateMachine
     # Example:
     # 
     #   attribute = machine.attribute
-    #   machine.define_instance_method(:parked?) do |machine, object|
-    #     machine.state?(object, :parked)
+    #   machine.define_instance_method(:state_name) do |machine, object|
+    #     machine.states.match(object)
     #   end
     def define_instance_method(method, &block)
       attribute = self.attribute
@@ -687,60 +714,6 @@ module StateMachine
     end
     alias_method :other_states, :state
     
-    # Determines whether the given object is in a specific state.  If the
-    # object's current value doesn't match the state, then this will return
-    # false, otherwise true.  If the given state is unknown, then an ArgumentError
-    # will be raised.
-    # 
-    # == Examples
-    # 
-    #   class Vehicle
-    #     state_machine :initial => :parked do
-    #       other_states :idling
-    #     end
-    #   end
-    #   
-    #   machine = Vehicle.state_machines[:state]
-    #   vehicle = Vehicle.new               # => #<Vehicle:0xb7c464b0 @state="parked">
-    #   
-    #   machine.state?(vehicle, :parked)    # => true
-    #   machine.state?(vehicle, :idling)    # => false
-    #   machine.state?(vehicle, :invalid)   # => ArgumentError: :invalid is an invalid key for :name index
-    def state?(object, name)
-      states.fetch(name).matches?(object.send(attribute))
-    end
-    
-    # Determines the current state of the given object as configured by this
-    # state machine.  This will attempt to find a known state that matches
-    # the value of the attribute on the object.  If no state is found, then
-    # an ArgumentError will be raised.
-    # 
-    # == Examples
-    # 
-    #   class Vehicle
-    #     state_machine :initial => :parked do
-    #       other_states :idling
-    #     end
-    #   end
-    #   
-    #   machine = Vehicle.state_machines[:state]
-    #   
-    #   vehicle = Vehicle.new         # => #<Vehicle:0xb7c464b0 @state="parked">
-    #   machine.state_for(vehicle)    # => #<StateMachine::State name=:parked value="parked" initial=true>
-    #   
-    #   vehicle.state = 'idling'
-    #   machine.state_for(vehicle)    # => #<StateMachine::State name=:idling value="idling" initial=true>
-    #   
-    #   vehicle.state = 'invalid'
-    #   machine.state_for(vehicle)    # => ArgumentError: "invalid" is not a known state value
-    def state_for(object)
-      value = object.send(attribute)
-      state = states[value, :value] || states.detect {|state| state.matches?(value)}
-      raise ArgumentError, "#{value.inspect} is not a known #{attribute} value" unless state
-      
-      state
-    end
-    
     # Defines one or more events for the machine and the transitions that can
     # be performed when those events are run.
     # 
@@ -753,7 +726,7 @@ module StateMachine
     # (the "park" event is used as an example):
     # * <tt>can_park?</tt> - Checks whether the "park" event can be fired given
     #   the current state of the object.
-    # * <tt>next_park_transition</tt> -  Gets the next transition that would be
+    # * <tt>park_transition</tt> -  Gets the next transition that would be
     #   performed if the "park" event were to be fired now on the object or nil
     #   if no transitions can be performed.
     # * <tt>park(run_action = true)</tt> - Fires the "park" event, transitioning
@@ -764,7 +737,7 @@ module StateMachine
     # 
     # With a namespace of "car", the above names map to the following methods:
     # * <tt>can_park_car?</tt>
-    # * <tt>next_park_car_transition</tt>
+    # * <tt>park_car_transition</tt>
     # * <tt>park_car</tt>
     # * <tt>park_car!</tt>
     # 
@@ -1121,20 +1094,21 @@ module StateMachine
       def default_action
       end
       
-      # Adds helper methods for interacting with this state machine's attribute,
-      # including reader, writer, and predicate methods
-      def define_attribute_helpers
-        define_attribute_accessor
-        define_attribute_predicate
+      # Adds helper methods for interacting with the state machine, including
+      # for states, events, and transitions
+      def define_helpers
+        define_state_accessor
+        define_state_predicate
+        define_event_helpers
         
         # Gets the state name for the current value
         define_instance_method("#{attribute}_name") do |machine, object|
-          machine.state_for(object).name
+          machine.states.match(object).name
         end
       end
       
-      # Adds reader/writer methods for accessing the attribute
-      def define_attribute_accessor
+      # Adds reader/writer methods for accessing the state attribute
+      def define_state_accessor
         attribute = self.attribute
         
         @instance_helper_module.class_eval do
@@ -1145,9 +1119,24 @@ module StateMachine
       
       # Adds predicate method to the owner class for determining the name of the
       # current state
-      def define_attribute_predicate
+      def define_state_predicate
         define_instance_method("#{attribute}?") do |machine, object, state|
-          machine.state?(object, state)
+          machine.states.matches?(object, state)
+        end
+      end
+      
+      # Adds helper methods for getting information about this state machine's
+      # events
+      def define_event_helpers
+        # Gets the events that are allowed to fire on the current object
+        define_instance_method("#{attribute}_events") do |machine, object|
+          machine.events.valid_for(object).map {|event| event.name}
+        end
+        
+        # Gets the next possible transitions that can be run on the current
+        # object
+        define_instance_method("#{attribute}_transitions") do |machine, object, *args|
+          machine.events.transitions_for(object, *args)
         end
       end
       
@@ -1214,7 +1203,7 @@ module StateMachine
       # Generates the message to use when invalidating the given object after
       # failing to transition on a specific event
       def invalid_message(object, event)
-        (@invalid_message || self.class.default_invalid_message) % [event.name, state_for(object).name]
+        (@invalid_message || self.class.default_invalid_message) % [event.name, states.match(object).name]
       end
   end
 end

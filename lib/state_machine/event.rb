@@ -153,13 +153,13 @@ module StateMachine
     # 
     # If the event can't be fired, then this will return false, otherwise true.
     def can_fire?(object)
-      !next_transition(object).nil?
+      !transition_for(object).nil?
     end
     
     # Finds and builds the next transition that can be performed on the given
     # object.  If no transitions can be made, then this will return nil.
-    def next_transition(object)
-      from = machine.state_for(object).name
+    def transition_for(object)
+      from = machine.states.match(object).name
       
       guards.each do |guard|
         if match = guard.match(object, :from => from)
@@ -183,7 +183,7 @@ module StateMachine
     def fire(object, *args)
       machine.reset(object)
       
-      if transition = next_transition(object)
+      if transition = transition_for(object)
         transition.perform(*args)
       else
         machine.invalidate(object, self)
@@ -229,8 +229,8 @@ module StateMachine
         
         # Gets the next transition that would be performed if the event were
         # fired now
-        machine.define_instance_method("next_#{qualified_name}_transition") do |machine, object|
-          machine.event(name).next_transition(object)
+        machine.define_instance_method("#{qualified_name}_transition") do |machine, object|
+          machine.event(name).transition_for(object)
         end
         
         # Fires the event
@@ -240,7 +240,7 @@ module StateMachine
         
         # Fires the event, raising an exception if it fails
         machine.define_instance_method("#{qualified_name}!") do |machine, object, *args|
-          object.send(qualified_name, *args) || raise(StateMachine::InvalidTransition, "Cannot transition #{machine.attribute} via :#{name} from #{machine.state_for(object).name.inspect}")
+          object.send(qualified_name, *args) || raise(StateMachine::InvalidTransition, "Cannot transition #{machine.attribute} via :#{name} from #{machine.states.match(object).name.inspect}")
         end
       end
   end

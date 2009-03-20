@@ -245,8 +245,8 @@ class VehicleUnsavedTest < Test::Unit::TestCase
     assert !@vehicle.can_park?
   end
   
-  def test_should_not_have_a_next_transition_for_park
-    assert_nil @vehicle.next_park_transition
+  def test_should_not_have_a_transition_for_park
+    assert_nil @vehicle.park_transition
   end
   
   def test_should_not_allow_park
@@ -257,14 +257,22 @@ class VehicleUnsavedTest < Test::Unit::TestCase
     assert @vehicle.can_ignite?
   end
   
-  def test_should_have_a_next_transition_for_ignite
-    transition = @vehicle.next_ignite_transition
+  def test_should_have_a_transition_for_ignite
+    transition = @vehicle.ignite_transition
     assert_not_nil transition
     assert_equal 'parked', transition.from
     assert_equal 'idling', transition.to
     assert_equal :ignite, transition.event
     assert_equal :state, transition.attribute
     assert_equal @vehicle, transition.object
+  end
+  
+  def test_should_have_a_list_of_possible_events
+    assert_equal [:ignite], @vehicle.state_events
+  end
+  
+  def test_should_have_a_list_of_possible_transitions
+    assert_equal [{:object => @vehicle, :attribute => :state, :event => :ignite, :from => 'parked', :to => 'idling'}], @vehicle.state_transitions.map {|transition| transition.attributes}
   end
   
   def test_should_allow_ignite
