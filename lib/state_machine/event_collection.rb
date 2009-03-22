@@ -1,8 +1,11 @@
-
 module StateMachine
   # Represents a collection of states in a state machine
   class EventCollection < NodeCollection
-    # Gets the list of events that can be fired on the given object
+    def initialize #:nodoc:
+      super(:index => [:name, :qualified_name])
+    end
+    
+    # Gets the list of events that can be fired on the given object.
     # 
     # == Examples
     # 
@@ -18,7 +21,7 @@ module StateMachine
     #     end
     #   end
     #   
-    #   events = Vehicle.state_machines[:state].events
+    #   events = Vehicle.state_machine(:state).events
     #   
     #   vehicle = Vehicle.new               # => #<Vehicle:0xb7c464b0 @state="parked">
     #   events.valid_for(vehicle)           # => [#<StateMachine::Event name=:ignite transitions=[:parked => :idling]>]
@@ -47,7 +50,7 @@ module StateMachine
     #     end
     #   end
     #   
-    #   events = Vehicle.state_machines[:state].events
+    #   events = Vehicle.state_machine.events
     #   
     #   vehicle = Vehicle.new                   # => #<Vehicle:0xb7c464b0 @state="parked">
     #   events.transitions_for(vehicle)         # => [#<StateMachine::Transition attribute=:state event=:ignite from="parked" from_name=:parked to="idling" to_name=:idling>]

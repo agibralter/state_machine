@@ -8,12 +8,6 @@ class EventCollectionByDefaultTest < Test::Unit::TestCase
   def test_should_not_have_any_nodes
     assert_equal 0, @events.length
   end
-end
-
-class EventCollectionTest < Test::Unit::TestCase
-  def setup
-    @events = StateMachine::EventCollection.new
-  end
   
   def test_should_not_have_any_valid_events_for_an_object
     assert @events.valid_for(@object).empty?
@@ -24,6 +18,27 @@ class EventCollectionTest < Test::Unit::TestCase
   end
 end
 
+class EventCollectionTest < Test::Unit::TestCase
+  def setup
+    @events = StateMachine::EventCollection.new
+    
+    @machine = StateMachine::Machine.new(Class.new, :namespace => 'alarm')
+    @events << @open = StateMachine::Event.new(@machine, :enable)
+  end
+  
+  def test_should_index_by_name
+    assert_equal @open, @events[:enable, :name]
+  end
+  
+  def test_should_index_by_name_by_default
+    assert_equal @open, @events[:enable]
+  end
+  
+  def test_should_index_by_qualified_name
+    assert_equal @open, @events[:enable_alarm, :qualified_name]
+  end
+end
+
 class EventCollectionWithEventsWithTransitionsTest < Test::Unit::TestCase
   def setup
     @events = StateMachine::EventCollection.new
@@ -31,6 +46,7 @@ class EventCollectionWithEventsWithTransitionsTest < Test::Unit::TestCase
     @klass = Class.new
     @machine = StateMachine::Machine.new(@klass, :initial => :parked)
     @machine.state :idling, :stalled
+    @machine.event :ignite
     
     @events << @ignite = StateMachine::Event.new(@machine, :ignite)
     @ignite.transition :parked => :idling
@@ -72,6 +88,8 @@ class EventCollectionWithEventsWithTransitionsTest < Test::Unit::TestCase
   end
   
   def test_should_not_include_no_op_loopback_transition_if_loopback_is_valid
+    @machine.event :park
+    
     @events << @park = StateMachine::Event.new(@machine, :park)
     @park.transition StateMachine::AllMatcher.instance => :parked
     
@@ -92,6 +110,7 @@ class EventCollectionWithMultipleEventsTest < Test::Unit::TestCase
     @klass = Class.new
     @machine = StateMachine::Machine.new(@klass, :initial => :parked)
     @machine.state :first_gear
+    @machine.event :park, :shift_down
     
     @events << @park = StateMachine::Event.new(@machine, :park)
     @park.transition :first_gear => :parked

@@ -20,14 +20,14 @@ module StateMachine
     #     end
     #   end
     #   
-    #   states = Vehicle.state_machines[:state].states
+    #   states = Vehicle.state_machine.states
     #   vehicle = Vehicle.new               # => #<Vehicle:0xb7c464b0 @state="parked">
     #   
     #   states.matches?(vehicle, :parked)   # => true
     #   states.matches?(vehicle, :idling)   # => false
     #   states.matches?(vehicle, :invalid)  # => ArgumentError: :invalid is an invalid key for :name index
     def matches?(object, name)
-      fetch(name).matches?(object.send(machine.attribute))
+      fetch(name).matches?(machine.read(object))
     end
     
     # Determines the current state of the given object as configured by this
@@ -43,7 +43,7 @@ module StateMachine
     #     end
     #   end
     #   
-    #   states = Vehicle.state_machines[:state].states
+    #   states = Vehicle.state_machine.states
     #   
     #   vehicle = Vehicle.new         # => #<Vehicle:0xb7c464b0 @state="parked">
     #   states.match(vehicle)         # => #<StateMachine::State name=:parked value="parked" initial=true>
@@ -56,7 +56,7 @@ module StateMachine
     def match(object)
       raise ArgumentError, 'No states available to match' unless machine = self.machine
       
-      value = object.send(machine.attribute)
+      value = machine.read(object)
       state = self[value, :value] || detect {|state| state.matches?(value)}
       raise ArgumentError, "#{value.inspect} is not a known #{machine.attribute} value" unless state
       

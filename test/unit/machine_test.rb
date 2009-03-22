@@ -902,6 +902,23 @@ class MachineWithCustomInitializeTest < Test::Unit::TestCase
   end
 end
 
+class MachinePersistenceTest < Test::Unit::TestCase
+  def setup
+    @klass = Class.new
+    @machine = StateMachine::Machine.new(@klass, :initial => :parked)
+    @object = @klass.new
+  end
+  
+  def test_should_allow_reading_state
+    assert_equal 'parked', @machine.read(@object)
+  end
+  
+  def test_should_allow_writing_state
+    @machine.write(@object, 'idling')
+    assert_equal 'idling', @object.state
+  end
+end
+
 class MachineWithStatesTest < Test::Unit::TestCase
   def setup
     @klass = Class.new
@@ -1302,44 +1319,44 @@ end
 class MachineWithNamespaceTest < Test::Unit::TestCase
   def setup
     @klass = Class.new
-    @machine = StateMachine::Machine.new(@klass, :namespace => 'car', :initial => :parked) do
-      event :ignite do
-        transition :parked => :idling
+    @machine = StateMachine::Machine.new(@klass, :namespace => 'alarm', :initial => :active) do
+      event :enable do
+        transition :off => :active
       end
       
-      event :park do
-        transition :idling => :parked
+      event :disable do
+        transition :active => :off
       end
     end
     @object = @klass.new
   end
   
   def test_should_namespace_state_predicates
-    [:car_parked?, :car_idling?].each do |name|
+    [:alarm_active?, :alarm_off?].each do |name|
       assert @object.respond_to?(name)
     end
   end
   
   def test_should_namespace_event_checks
-    [:can_ignite_car?, :can_park_car?].each do |name|
+    [:can_enable_alarm?, :can_disable_alarm?].each do |name|
       assert @object.respond_to?(name)
     end
   end
   
   def test_should_namespace_event_transition_readers
-    [:ignite_car_transition, :park_car_transition].each do |name|
+    [:enable_alarm_transition, :disable_alarm_transition].each do |name|
       assert @object.respond_to?(name)
     end
   end
   
   def test_should_namespace_events
-    [:ignite_car, :park_car].each do |name|
+    [:enable_alarm, :disable_alarm].each do |name|
       assert @object.respond_to?(name)
     end
   end
   
   def test_should_namespace_bang_events
-    [:ignite_car!, :park_car!].each do |name|
+    [:enable_alarm!, :disable_alarm!].each do |name|
       assert @object.respond_to?(name)
     end
   end
@@ -1406,7 +1423,7 @@ class MachineFinderWithExistingMachineOnSuperclassTest < Test::Unit::TestCase
     @base_machine.after_transition(lambda {})
     
     @klass = Class.new(@base_class)
-    @machine = StateMachine::Machine.find_or_create(@klass, :status)
+    @machine = StateMachine::Machine.find_or_create(@klass, :status) {}
   end
   
   def test_should_accept_a_block
@@ -1418,7 +1435,20 @@ class MachineFinderWithExistingMachineOnSuperclassTest < Test::Unit::TestCase
     assert called
   end
   
-  def test_should_create_a_new_machine
+  def test_should_not_create_a_new_machine_if_no_block_or_options
+    machine = StateMachine::Machine.find_or_create(Class.new(@base_class), :status)
+    
+    assert_same machine, @base_machine
+  end
+  
+  def test_should_create_a_new_machine_if_given_options
+    machine = StateMachine::Machine.find_or_create(@klass, :status, :initial => :parked)
+    
+    assert_not_nil machine
+    assert_not_same machine, @base_machine
+  end
+  
+  def test_should_create_a_new_machine_if_given_block
     assert_not_nil @machine
     assert_not_same @machine, @base_machine
   end

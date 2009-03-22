@@ -5,7 +5,7 @@ class AutoShop
   
   def initialize
     @num_customers = 0
-    super()
+    super
   end
   
   state_machine :initial => :available do
@@ -651,6 +651,38 @@ class VehicleRepairedTest < Test::Unit::TestCase
   
   def test_should_not_have_a_busy_auto_shop
     assert @vehicle.auto_shop.available?
+  end
+end
+
+class VehicleWithParallelEventsTest < Test::Unit::TestCase
+  def setup
+    @vehicle = Vehicle.new
+  end
+  
+  def test_should_fail_if_any_event_cannot_transition
+    assert !@vehicle.fire_events(:ignite, :cancel_insurance)
+  end
+  
+  def test_should_be_successful_if_all_events_transition
+    assert @vehicle.fire_events(:ignite, :buy_insurance)
+  end
+  
+  def test_should_not_save_if_skipping_action
+    assert @vehicle.fire_events(:ignite, :buy_insurance, false)
+    assert !@vehicle.saved
+  end
+  
+  def test_should_raise_exception_if_any_event_cannot_transition_on_bang
+    assert_raise(StateMachine::InvalidTransition) { @vehicle.fire_events!(:ignite, :cancel_insurance) }
+  end
+  
+  def test_should_not_raise_exception_if_all_events_transition_on_bang
+    assert @vehicle.fire_events!(:ignite, :buy_insurance)
+  end
+  
+  def test_should_not_save_if_skipping_action_on_bang
+    assert @vehicle.fire_events!(:ignite, :buy_insurance, false)
+    assert !@vehicle.saved
   end
 end
 
