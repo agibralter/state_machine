@@ -52,6 +52,10 @@ begin
       def test_should_use_save_as_action
         assert_equal :save, @machine.action
       end
+      
+      def test_should_use_transactions
+        assert_equal true, @machine.use_transactions
+      end
     end
     
     class MachineTest < BaseTestCase
@@ -135,9 +139,9 @@ begin
         record = @model.new
         record.state = 'parked'
         
-        @machine.invalidate(record, StateMachine::Event.new(@machine, :park))
+        @machine.invalidate(record, :state, :invalid_transition, [[:event, :park]])
         
-        assert_equal ['cannot be transitioned via :park from :parked'], record.errors.on(:state)
+        assert_equal ['cannot transition via "park"'], record.errors.on(:state)
       end
       
       def test_should_clear_errors_on_reset
@@ -257,7 +261,7 @@ begin
         assert called
       end
       
-      def test_should_pass_transition_into_before_callbacks_with_one_argument
+      def test_should_pass_transition_to_before_callbacks_with_one_argument
         transition = nil
         @machine.before_transition(lambda {|arg| transition = arg})
         
@@ -265,7 +269,7 @@ begin
         assert_equal @transition, transition
       end
       
-      def test_should_pass_transition_into_before_callbacks_with_multiple_arguments
+      def test_should_pass_transition_to_before_callbacks_with_multiple_arguments
         callback_args = nil
         @machine.before_transition(lambda {|*args| callback_args = args})
         
@@ -289,12 +293,12 @@ begin
         assert called
       end
       
-      def test_should_pass_transition_and_result_into_after_callbacks_with_multiple_arguments
+      def test_should_pass_transition_to_after_callbacks_with_multiple_arguments
         callback_args = nil
         @machine.after_transition(lambda {|*args| callback_args = args})
         
         @transition.perform
-        assert_equal [@transition, true], callback_args
+        assert_equal [@transition], callback_args
       end
       
       def test_should_run_after_callbacks_with_the_context_of_the_record

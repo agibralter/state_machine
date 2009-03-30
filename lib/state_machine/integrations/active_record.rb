@@ -60,6 +60,14 @@ module StateMachine
     # rolled back.  If an after callback halts the chain, the previous result
     # still applies and the transaction is *not* rolled back.
     # 
+    # To turn off transactions:
+    # 
+    #   class Vehicle < ActiveRecord::Base
+    #     state_machine :initial => :parked, :use_transactions => false do
+    #       ...
+    #     end
+    #   end
+    # 
     # == Validation errors
     # 
     # If an event fails to successfully fire because there are no matching
@@ -71,7 +79,7 @@ module StateMachine
     # 
     #   vehicle = Vehicle.create(:state => 'idling')  # => #<Vehicle id: 1, name: nil, state: "idling">
     #   vehicle.ignite                                # => false
-    #   vehicle.errors.full_messages                  # => ["State cannot be transitioned via :ignite from :idling"]
+    #   vehicle.errors.full_messages                  # => ["State cannot transition via \"ignite\""]
     # 
     # If an event fails to fire because of a validation error on the record and
     # *not* because a matching transition was not available, no error messages
@@ -138,9 +146,21 @@ module StateMachine
     # In addition to support for ActiveRecord-like hooks, there is additional
     # support for ActiveRecord observers.  Because of the way ActiveRecord
     # observers are designed, there is less flexibility around the specific
-    # transitions that can be hooked in.  As a result, observers can only
-    # hook into before/after callbacks for events and generic transitions
-    # like so:
+    # transitions that can be hooked in.  However, a large number of hooks
+    # *are* supported.  For example, if a transition for a record's +state+
+    # attribute changes the state from +parked+ to +idling+ via the +ignite+
+    # event, the following observer methods are supported:
+    # * before/after_ignite_from_parked_to_idling
+    # * before/after_ignite_from_parked
+    # * before/after_ignite_to_idling
+    # * before/after_ignite
+    # * before/after_transition_state_from_parked_to_idling
+    # * before/after_transition_state_from_parked
+    # * before/after_transition_state_to_idling
+    # * before/after_transition_state
+    # * before/after_transition
+    # 
+    # The following class shows an example of some of these hooks:
     # 
     #   class VehicleObserver < ActiveRecord::Observer
     #     def before_save(vehicle)
@@ -177,6 +197,10 @@ module StateMachine
     #     end
     #   end
     module ActiveRecord
+      # The default options to use for state machines using this integration
+      class << self; attr_reader :defaults; end
+      @defaults = {:action => :save}
+      
       # Should this integration be used for state machines in the given class?
       # Classes that inherit from ActiveRecord::Base will automatically use
       # the ActiveRecord integration.
@@ -190,30 +214,21 @@ module StateMachine
         I18n.load_path << "#{File.dirname(__FILE__)}/active_record/locale.rb" if Object.const_defined?(:I18n)
       end
       
-      # Adds a validation error to the given object after failing to fire a
-      # specific event
-      def invalidate(object, event)
+      # Adds a validation error to the given object 
+      def invalidate(object, attribute, message, values = [])
         if Object.const_defined?(:I18n)
-          object.errors.add(attribute, :invalid_transition,
-            :event => event.name,
-            :value => states.match(object).name,
-            :default => @invalid_message
-          )
+          options = values.inject({}) {|options, (key, value)| options[key] = value; options}
+          object.errors.add(attribute, message, options.merge(
+            :default => @messages[message]
+          ))
         else
-          object.errors.add(attribute, invalid_message(object, event))
+          object.errors.add(attribute, generate_message(message, values))
         end
       end
       
       # Resets an errors previously added when invalidating the given object
       def reset(object)
         object.errors.clear
-      end
-      
-      # Runs a new database transaction, rolling back any changes by raising
-      # an ActiveRecord::Rollback exception if the yielded block fails
-      # (i.e. returns false).
-      def within_transaction(object)
-        object.class.transaction {raise ::ActiveRecord::Rollback unless yield}
       end
       
       protected
@@ -223,11 +238,6 @@ module StateMachine
           # Observer callbacks never halt the chain; result is ignored
           callbacks[:before] << Callback.new {|object, transition| notify(:before, object, transition)}
           callbacks[:after] << Callback.new {|object, transition, result| notify(:after, object, transition)}
-        end
-        
-        # Sets the default action for all ActiveRecord state machines to +save+
-        def default_action
-          :save
         end
         
         # Skips defining reader/writer methods since this is done automatically
@@ -242,7 +252,7 @@ module StateMachine
           
           # Still use class_eval here instance of define_instance_method since
           # we need to be able to call +super+
-          owner_class.class_eval do
+          @instance_helper_module.class_eval do
             define_method("#{attribute}?") do |*args|
               args.empty? ? super(*args) : self.class.state_machine(attribute).states.matches?(self, *args)
             end
@@ -261,6 +271,13 @@ module StateMachine
         def create_without_scope(name)
           attribute = self.attribute
           define_scope(name, lambda {|values| {:conditions => ["#{attribute} NOT IN (?)", values]}})
+        end
+        
+        # Runs a new database transaction, rolling back any changes by raising
+        # an ActiveRecord::Rollback exception if the yielded block fails
+        # (i.e. returns false).
+        def transaction(object)
+          object.class.transaction {raise ::ActiveRecord::Rollback unless yield}
         end
         
         # Creates a new callback in the callback chain, always inserting it
@@ -300,17 +317,37 @@ module StateMachine
         # Notifies observers on the given object that a callback occurred
         # involving the given transition.  This will attempt to call the
         # following methods on observers:
-        # * #{type}_#{event}
+        # * #{type}_#{qualified_event}_from_#{from}_to_#{to}
+        # * #{type}_#{qualified_event}_from_#{from}
+        # * #{type}_#{qualified_event}_to_#{to}
+        # * #{type}_#{qualified_event}
+        # * #{type}_transition_#{attribute}_from_#{from}_to_#{to}
+        # * #{type}_transition_#{attribute}_from_#{from}
+        # * #{type}_transition_#{attribute}_to_#{to}
+        # * #{type}_transition_#{attribute}
         # * #{type}_transition
         # 
         # This will always return true regardless of the results of the
         # callbacks.
         def notify(type, object, transition)
-          qualified_event = namespace ? "#{transition.event}_#{namespace}" : transition.event
-          ["#{type}_#{qualified_event}", "#{type}_transition"].each do |method|
-            object.class.changed
-            object.class.notify_observers(method, object, transition)
+          attribute = transition.attribute
+          event = transition.qualified_event
+          from = transition.from_name
+          to = transition.to_name
+          
+          # Machine-specific updates
+          ["#{type}_#{event}", "#{type}_transition_#{attribute}"].each do |event_segment|
+            ["_from_#{from}", nil].each do |from_segment|
+              ["_to_#{to}", nil].each do |to_segment|
+                object.class.changed
+                object.class.notify_observers([event_segment, from_segment, to_segment].join, object, transition)
+              end
+            end
           end
+          
+          # Generic updates
+          object.class.changed
+          object.class.notify_observers("#{type}_transition", object, transition)
           
           true
         end

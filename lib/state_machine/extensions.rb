@@ -15,7 +15,7 @@ module StateMachine
     # 
     # The hash of state machines maps +attribute+ => +machine+, e.g.
     # 
-    #   Vehicle.state_machines # => {:state => #<StateMachine::Machine:0xb6f6e4a4 ...>
+    #   Vehicle.state_machines # => {:state => #<StateMachine::Machine:0xb6f6e4a4 ...>}
     def state_machines
       @state_machines ||= superclass.state_machines.dup
     end
@@ -130,7 +130,7 @@ module StateMachine
     #       end
     #     end
     #     
-    #     state_machine :alarm_state, :namespace => 'alarm', :initial => :on do
+    #     state_machine :alarm_state, :namespace => 'alarm', :initial => :active do
     #       event :enable do
     #         transition all => :active
     #       end

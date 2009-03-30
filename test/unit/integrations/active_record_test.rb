@@ -69,6 +69,10 @@ begin
         assert_equal :save, @machine.action
       end
       
+      def test_should_use_transactions
+        assert_equal true, @machine.use_transactions
+      end
+      
       def test_should_create_notifier_before_callback
         assert_equal 1, @machine.callbacks[:before].size
       end
@@ -161,10 +165,10 @@ begin
         record = @model.new
         record.state = 'parked'
         
-        @machine.invalidate(record, StateMachine::Event.new(@machine, :park))
+        @machine.invalidate(record, :state, :invalid_transition, [[:event, :park]])
         
         assert record.errors.invalid?(:state)
-        assert_equal 'cannot be transitioned via :park from :parked', record.errors.on(:state)
+        assert_equal 'cannot transition via "park"', record.errors.on(:state)
       end
       
       def test_should_clear_errors_on_reset
@@ -226,6 +230,23 @@ begin
       
       def test_should_set_initial_state_on_created_object
         assert_equal 'parked', @record.state
+      end
+    end
+    
+    class MachineWithConflictingPredicateTest < ActiveRecord::TestCase
+      def setup
+        @model = new_model do
+          def state?(*args)
+            true
+          end
+        end
+        
+        @machine = StateMachine::Machine.new(@model)
+        @record = @model.new
+      end
+      
+      def test_should_not_define_attribute_predicate
+        assert @record.state?
       end
     end
     
@@ -357,7 +378,7 @@ begin
         assert called
       end
       
-      def test_should_pass_record_into_before_callbacks_with_one_argument
+      def test_should_pass_record_to_before_callbacks_with_one_argument
         record = nil
         @machine.before_transition(lambda {|arg| record = arg})
         
@@ -365,7 +386,7 @@ begin
         assert_equal @record, record
       end
       
-      def test_should_pass_record_and_transition_into_before_callbacks_with_multiple_arguments
+      def test_should_pass_record_and_transition_to_before_callbacks_with_multiple_arguments
         callback_args = nil
         @machine.before_transition(lambda {|*args| callback_args = args})
         
@@ -389,7 +410,7 @@ begin
         assert called
       end
       
-      def test_should_pass_record_into_after_callbacks_with_one_argument
+      def test_should_pass_record_to_after_callbacks_with_one_argument
         record = nil
         @machine.after_transition(lambda {|arg| record = arg})
         
@@ -397,12 +418,12 @@ begin
         assert_equal @record, record
       end
       
-      def test_should_pass_record_transition_and_result_into_after_callbacks_with_multiple_arguments
+      def test_should_pass_record_and_transition_to_after_callbacks_with_multiple_arguments
         callback_args = nil
         @machine.after_transition(lambda {|*args| callback_args = args})
         
         @transition.perform
-        assert_equal [@record, @transition, true], callback_args
+        assert_equal [@record, @transition], callback_args
       end
       
       def test_should_run_after_callbacks_outside_the_context_of_the_record
@@ -496,8 +517,8 @@ begin
         assert !@result
       end
       
-      def test_should_change_current_state
-        assert_equal 'idling', @record.state
+      def test_should_not_change_current_state
+        assert_equal 'parked', @record.state
       end
       
       def test_should_not_save_record
@@ -577,19 +598,35 @@ begin
         @transition = StateMachine::Transition.new(@record, @machine, :ignite, :parked, :idling)
       end
       
-      def test_should_call_before_event_method
+      def test_should_call_all_transition_callback_permutations
+        callbacks = [
+          :before_ignite_from_parked_to_idling,
+          :before_ignite_from_parked,
+          :before_ignite_to_idling,
+          :before_ignite,
+          :before_transition_state_from_parked_to_idling,
+          :before_transition_state_from_parked,
+          :before_transition_state_to_idling,
+          :before_transition_state,
+          :before_transition
+        ]
+        
+        notified = false
         observer = new_observer(@model) do
-          def before_ignite(*args)
-            notifications << args
+          callbacks.each do |callback|
+            define_method(callback) do
+              notifications << callback
+            end
           end
         end
+        
         instance = observer.instance
         
         @transition.perform
-        assert_equal [[@record, @transition]], instance.notifications
+        assert_equal callbacks, instance.notifications
       end
       
-      def test_should_call_before_transition_method
+      def test_should_pass_record_and_transition_to_before_callbacks
         observer = new_observer(@model) do
           def before_transition(*args)
             notifications << args
@@ -601,19 +638,7 @@ begin
         assert_equal [[@record, @transition]], instance.notifications
       end
       
-      def test_should_call_after_event_method
-        observer = new_observer(@model) do
-          def after_ignite(*args)
-            notifications << args
-          end
-        end
-        instance = observer.instance
-        
-        @transition.perform
-        assert_equal [[@record, @transition]], instance.notifications
-      end
-      
-      def test_should_call_after_transition_method
+      def test_should_pass_record_and_transition_to_after_callbacks
         observer = new_observer(@model) do
           def after_transition(*args)
             notifications << args
@@ -623,22 +648,6 @@ begin
         
         @transition.perform
         assert_equal [[@record, @transition]], instance.notifications
-      end
-      
-      def test_should_call_event_method_before_transition_method
-        observer = new_observer(@model) do
-          def before_ignite(*args)
-            notifications << :before_ignite
-          end
-          
-          def before_transition(*args)
-            notifications << :before_transition
-          end
-        end
-        instance = observer.instance
-        
-        @transition.perform
-        assert_equal [:before_ignite, :before_transition], instance.notifications
       end
       
       def test_should_call_methods_outside_the_context_of_the_record
@@ -758,7 +767,7 @@ begin
             :activerecord => {
               :errors => {
                 :messages => {
-                  :invalid_transition => 'cannot {{event}} when {{value}}'
+                  :invalid_transition => 'cannot {{event}}'
                 }
               }
             }
@@ -770,8 +779,8 @@ begin
           
           record = @model.new(:state => 'idling')
           
-          machine.invalidate(record, event)
-          assert_equal 'cannot ignite when idling', record.errors.on(:state)
+          machine.invalidate(record, :state, :invalid_transition, [[:event, :ignite]])
+          assert_equal 'cannot ignite', record.errors.on(:state)
         end
         
         def test_should_invalidate_using_customized_i18n_key_if_specified
@@ -779,32 +788,30 @@ begin
             :activerecord => {
               :errors => {
                 :messages => {
-                  :bad_transition => 'cannot {{event}} when {{value}}'
+                  :bad_transition => 'cannot {{event}}'
                 }
               }
             }
           })
           
-          machine = StateMachine::Machine.new(@model, :invalid_message => :bad_transition)
+          machine = StateMachine::Machine.new(@model, :messages => {:invalid_transition => :bad_transition})
           machine.state :parked, :idling
-          event = StateMachine::Event.new(machine, :ignite)
           
           record = @model.new(:state => 'idling')
           
-          machine.invalidate(record, event)
-          assert_equal 'cannot ignite when idling', record.errors.on(:state)
+          machine.invalidate(record, :state, :invalid_transition, [[:event, :ignite]])
+          assert_equal 'cannot ignite', record.errors.on(:state)
         end
       end
       
       def test_should_invalidate_using_customized_i18n_string_if_specified
-        machine = StateMachine::Machine.new(@model, :invalid_message => 'cannot {{event}} when {{value}}')
+        machine = StateMachine::Machine.new(@model, :messages => {:invalid_transition => 'cannot {{event}}'})
         machine.state :parked, :idling
-        event = StateMachine::Event.new(machine, :ignite)
         
         record = @model.new(:state => 'idling')
         
-        machine.invalidate(record, event)
-        assert_equal 'cannot ignite when idling', record.errors.on(:state)
+        machine.invalidate(record, :state, :invalid_transition, [[:event, :ignite]])
+        assert_equal 'cannot ignite', record.errors.on(:state)
       end
     else
       $stderr.puts 'Skipping ActiveRecord I18n tests. `gem install active_record` >= v2.2.0 and try again.'

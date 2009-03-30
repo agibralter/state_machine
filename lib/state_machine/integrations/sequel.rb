@@ -28,10 +28,10 @@ module StateMachine
     # 
     # For example,
     # 
-    #   vehicle = Vehicle.create          # => #<Vehicle id=1 name=nil state="parked">
+    #   vehicle = Vehicle.create          # => #<Vehicle @values={:state=>"parked", :name=>nil, :id=>1}>
     #   vehicle.name = 'Ford Explorer'
     #   vehicle.ignite                    # => true
-    #   vehicle.refresh                   # => #<Vehicle id=1 name="Ford Explorer" state="idling">
+    #   vehicle.refresh                   # => #<Vehicle @values={:state=>"idling", :name=>"Ford Explorer", :id=>1}>
     # 
     # == Transactions
     # 
@@ -51,7 +51,7 @@ module StateMachine
     #     end
     #   end
     #   
-    #   vehicle = Vehicle.create      # => #<Vehicle id=1 name=nil state="parked">
+    #   vehicle = Vehicle.create      # => #<Vehicle @values={:state=>"parked", :name=>nil, :id=>1}>
     #   vehicle.ignite                # => false
     #   Message.count                 # => 0
     # 
@@ -59,6 +59,14 @@ module StateMachine
     # failed attempts to save the record will result in the transaction being
     # rolled back.  If an after callback halts the chain, the previous result
     # still applies and the transaction is *not* rolled back.
+    # 
+    # To turn off transactions:
+    # 
+    #   class Vehicle < Sequel::Model
+    #     state_machine :initial => :parked, :use_transactions => false do
+    #       ...
+    #     end
+    #   end
     # 
     # == Validation errors
     # 
@@ -69,9 +77,9 @@ module StateMachine
     # 
     # For example,
     # 
-    #   vehicle = Vehicle.create(:state => 'idling')  # => #<Vehicle id=1 name=nil state="idling">
+    #   vehicle = Vehicle.create(:state => 'idling')  # => #<Vehicle @values={:state=>"parked", :name=>nil, :id=>1}>
     #   vehicle.ignite                                # => false
-    #   vehicle.errors.full_messages                  # => ["state cannot be transitioned via :ignite from :idling"]
+    #   vehicle.errors.full_messages                  # => ["state cannot transition via \"ignite\""]
     # 
     # If an event fails to fire because of a validation error on the record and
     # *not* because a matching transition was not available, no error messages
@@ -139,6 +147,10 @@ module StateMachine
     # Note, also, that the transition can be accessed by simply defining
     # additional arguments in the callback block.
     module Sequel
+      # The default options to use for state machines using this integration
+      class << self; attr_reader :defaults; end
+      @defaults = {:action => :save}
+      
       # Should this integration be used for state machines in the given class?
       # Classes that include Sequel::Model will automatically use the Sequel
       # integration.
@@ -146,10 +158,9 @@ module StateMachine
         defined?(::Sequel::Model) && klass <= ::Sequel::Model
       end
       
-      # Adds a validation error to the given object after failing to fire a
-      # specific event
-      def invalidate(object, event)
-        object.errors.add(attribute, invalid_message(object, event))
+      # Adds a validation error to the given object
+      def invalidate(object, attribute, message, values = [])
+        object.errors.add(attribute, generate_message(message, values))
       end
       
       # Resets an errors previously added when invalidating the given object
@@ -157,18 +168,7 @@ module StateMachine
         object.errors.clear
       end
       
-      # Runs a new database transaction, rolling back any changes if the
-      # yielded block fails (i.e. returns false).
-      def within_transaction(object)
-        object.db.transaction {raise ::Sequel::Error::Rollback unless yield}
-      end
-      
       protected
-        # Sets the default action for all Sequel state machines to +save+
-        def default_action
-          :save
-        end
-        
         # Skips defining reader/writer methods since this is done automatically
         def define_state_accessor
         end
@@ -185,6 +185,12 @@ module StateMachine
         def create_without_scope(name)
           attribute = self.attribute
           lambda {|model, values| model.filter(~{attribute.to_sym => values})}
+        end
+        
+        # Runs a new database transaction, rolling back any changes if the
+        # yielded block fails (i.e. returns false).
+        def transaction(object)
+          object.db.transaction {raise ::Sequel::Error::Rollback unless yield}
         end
         
         # Creates a new callback in the callback chain, always ensuring that

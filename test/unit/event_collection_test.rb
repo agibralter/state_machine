@@ -2,11 +2,16 @@ require File.expand_path(File.dirname(__FILE__) + '/../test_helper')
 
 class EventCollectionByDefaultTest < Test::Unit::TestCase
   def setup
-    @events = StateMachine::EventCollection.new
+    @machine = StateMachine::Machine.new(Class.new)
+    @events = StateMachine::EventCollection.new(@machine)
   end
   
   def test_should_not_have_any_nodes
     assert_equal 0, @events.length
+  end
+  
+  def test_should_have_a_machine
+    assert_equal @machine, @events.machine
   end
   
   def test_should_not_have_any_valid_events_for_an_object
@@ -20,10 +25,10 @@ end
 
 class EventCollectionTest < Test::Unit::TestCase
   def setup
-    @events = StateMachine::EventCollection.new
+    machine = StateMachine::Machine.new(Class.new, :namespace => 'alarm')
+    @events = StateMachine::EventCollection.new(machine)
     
-    @machine = StateMachine::Machine.new(Class.new, :namespace => 'alarm')
-    @events << @open = StateMachine::Event.new(@machine, :enable)
+    @events << @open = StateMachine::Event.new(machine, :enable)
   end
   
   def test_should_index_by_name
@@ -41,10 +46,10 @@ end
 
 class EventCollectionWithEventsWithTransitionsTest < Test::Unit::TestCase
   def setup
-    @events = StateMachine::EventCollection.new
-    
     @klass = Class.new
     @machine = StateMachine::Machine.new(@klass, :initial => :parked)
+    @events = StateMachine::EventCollection.new(@machine)
+    
     @machine.state :idling, :stalled
     @machine.event :ignite
     
@@ -105,10 +110,10 @@ end
 
 class EventCollectionWithMultipleEventsTest < Test::Unit::TestCase
   def setup
-    @events = StateMachine::EventCollection.new
-    
     @klass = Class.new
     @machine = StateMachine::Machine.new(@klass, :initial => :parked)
+    @events = StateMachine::EventCollection.new(@machine)
+    
     @machine.state :first_gear
     @machine.event :park, :shift_down
     
