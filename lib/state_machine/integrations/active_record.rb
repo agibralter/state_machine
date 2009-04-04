@@ -33,6 +33,37 @@ module StateMachine
     #   vehicle.ignite                    # => true
     #   vehicle.reload                    # => #<Vehicle id: 1, name: "Ford Explorer", state: "idling">
     # 
+    # == Events
+    # 
+    # As described in StateMachine::InstanceMethods#state_machine, event
+    # attributes are created for every machine that allow transitions to be
+    # performed automatically when the object's action (in this case, :save)
+    # is called.
+    # 
+    # In ActiveRecord, these automated events are run in the following order:
+    # * before validation - Run before callbacks and persist new states, then validate
+    # * before save - If validation was skipped, run before callbacks and persist new states, then save
+    # * after save - Run after callbacks
+    # 
+    # For example,
+    # 
+    #   vehicle = Vehicle.create          # => #<Vehicle id: 1, name: nil, state: "parked">
+    #   vehicle.state_event               # => nil
+    #   vehicle.state_event = 'invalid'
+    #   vehicle.valid?                    # => false
+    #   vehicle.errors.full_messages      # => ["State event is invalid"]
+    #   
+    #   vehicle.state_event = 'ignite'
+    #   vehicle.valid?                    # => true
+    #   vehicle.save                      # => true
+    #   vehicle.state                     # => "idling"
+    #   vehicle.state_event               # => nil
+    # 
+    # Note that this can also be done on a mass-assignment basis:
+    # 
+    #   vehicle = Vehicle.create(:state_event => 'ignite')  # => #<Vehicle id: 1, name: nil, state: "idling">
+    #   vehicle.state                                       # => "idling"
+    # 
     # == Transactions
     # 
     # In order to ensure that any changes made during transition callbacks
@@ -226,7 +257,7 @@ module StateMachine
         end
       end
       
-      # Resets an errors previously added when invalidating the given object
+      # Resets any errors previously added when invalidating the given object
       def reset(object)
         object.errors.clear
       end
@@ -235,9 +266,8 @@ module StateMachine
         # Adds the default callbacks for notifying ActiveRecord observers
         # before/after a transition has been performed.
         def after_initialize
-          # Observer callbacks never halt the chain; result is ignored
           callbacks[:before] << Callback.new {|object, transition| notify(:before, object, transition)}
-          callbacks[:after] << Callback.new {|object, transition, result| notify(:after, object, transition)}
+          callbacks[:after] << Callback.new {|object, transition| notify(:after, object, transition)}
         end
         
         # Skips defining reader/writer methods since this is done automatically
@@ -255,6 +285,17 @@ module StateMachine
           @instance_helper_module.class_eval do
             define_method("#{attribute}?") do |*args|
               args.empty? ? super(*args) : self.class.state_machine(attribute).states.matches?(self, *args)
+            end
+          end
+        end
+        
+        # Adds hooks into validation for automatically firing events
+        def define_action_helpers
+          if super && action == :save
+            @instance_helper_module.class_eval do
+              define_method(:valid?) do |*args|
+                self.class.state_machines.fire_attribute_events(self, :save, false) { super(*args) }
+              end
             end
           end
         end

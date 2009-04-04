@@ -67,7 +67,7 @@ module StateMachine
     # will be replaced with the updated ones.
     def update(node)
       @indices.each do |attribute, index|
-        old_key = index.respond_to?(:key) ? index.key(node) : index.index(node)
+        old_key = RUBY_VERSION < '1.9' ? index.index(node) : index.key(node)
         new_key = node.send(attribute)
         
         # Only replace the key if it's changed
@@ -79,7 +79,7 @@ module StateMachine
     end
     
     # Calls the block once for each element in self, passing that element as a
-    # parameters.
+    # parameter.
     # 
     #   states = StateMachine::NodeCollection.new
     #   states << StateMachine::State.new(machine, :parked)
@@ -133,7 +133,7 @@ module StateMachine
     # 
     #   collection['invalid', :value]   # => IndexError: "invalid" is an invalid value
     def fetch(key, index_name = @default_index)
-      self[key, index_name] || raise(ArgumentError, "#{key.inspect} is an invalid #{index_name}")
+      self[key, index_name] || raise(IndexError, "#{key.inspect} is an invalid #{index_name}")
     end
     
     private
