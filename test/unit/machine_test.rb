@@ -1273,12 +1273,12 @@ class MachineWithTransitionCallbacksTest < Test::Unit::TestCase
   end
   
   def test_should_not_raise_exception_if_implicit_option_specified
-    assert_nothing_raised {@machine.before_transition :invalid => true, :do => lambda {}}
+    assert_nothing_raised {@machine.before_transition :invalid => :valid, :do => lambda {}}
   end
   
-  def test_should_raise_exception_if_do_option_not_specified
+  def test_should_raise_exception_if_method_not_specified
     exception = assert_raise(ArgumentError) {@machine.before_transition :to => :idling}
-    assert_equal ':do callback must be specified', exception.message
+    assert_equal 'Method(s) for callback must be specified', exception.message
   end
   
   def test_should_invoke_callbacks_during_transition
