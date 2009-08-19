@@ -16,8 +16,8 @@ module StateMachine
       # 1. Before callbacks
       # 2. Persist state
       # 3. Invoke action
-      # 4. After callbacks if configured
-      # 5. Rollback if action is unsuccessful
+      # 4. After callbacks (if configured)
+      # 5. Rollback (if action is unsuccessful)
       # 
       # Configuration options:
       # * <tt>:action</tt> - Whether to run the action configured for each transition
@@ -46,7 +46,7 @@ module StateMachine
                 # Block was given: use the result for each transition
                 result = yield
                 transitions.each {|transition| results[transition.action] = result}
-                result
+                !!result
               elsif options[:action] == false
                 # Skip the action
                 true
@@ -64,8 +64,9 @@ module StateMachine
             raise
           end
           
-          # Always run after callbacks regardless of whether the actions failed
-          transitions.each {|transition| transition.after(results[transition.action])} unless options[:after] == false
+          # Run after callbacks even when the actions failed. The :after option
+          # is ignored if the transitions were unsuccessful.
+          transitions.each {|transition| transition.after(results[transition.action], success)} unless options[:after] == false && success
           
           # Rollback the transitions if the transaction was unsuccessful
           transitions.each {|transition| transition.rollback} unless success
@@ -124,7 +125,7 @@ module StateMachine
     attr_reader :result
     
     # Creates a new, specific transition
-    def initialize(object, machine, event, from_name, to_name) #:nodoc:
+    def initialize(object, machine, event, from_name, to_name, read_state = true) #:nodoc:
       @object = object
       @machine = machine
       @args = []
@@ -136,7 +137,7 @@ module StateMachine
       
       # From state information
       from_state = machine.states.fetch(from_name)
-      @from = machine.read(object)
+      @from = read_state ? machine.read(object, :state) : from_state.value
       @from_name = from_state.name
       @qualified_from_name = from_state.qualified_name
       
@@ -218,6 +219,9 @@ module StateMachine
     # callbacks that are configured to match the event, from state, and to
     # state will be invoked.
     # 
+    # Once the callbacks are run, they cannot be run again until this transition
+    # is reset.
+    # 
     # == Example
     # 
     #   class Vehicle
@@ -233,7 +237,11 @@ module StateMachine
       result = false
       
       catch(:halt) do
-        callback(:before)
+        unless @before_run
+          callback(:before)
+          @before_run = true
+        end
+        
         result = true
       end
       
@@ -241,7 +249,8 @@ module StateMachine
     end
     
     # Transitions the current value of the state to that specified by the
-    # transition.
+    # transition.  Once the state is persisted, it cannot be persisted again
+    # until this transition is reset.
     # 
     # == Example
     # 
@@ -259,15 +268,21 @@ module StateMachine
     #   
     #   vehicle.state   # => 'idling'
     def persist
-      machine.write(object, to)
+      unless @persisted
+        machine.write(object, :state, to)
+        @persisted = true
+      end
     end
     
     # Runs the machine's +after+ callbacks for this transition.  Only
     # callbacks that are configured to match the event, from state, and to
     # state will be invoked.
     # 
-    # The result is used to indicate whether the associated machine action
+    # The result can be used to indicate whether the associated machine action
     # was executed successfully.
+    # 
+    # Once the callbacks are run, they cannot be run again until this transition
+    # is reset.
     # 
     # == Halting
     # 
@@ -291,11 +306,14 @@ module StateMachine
     #   vehicle = Vehicle.new
     #   transition = StateMachine::Transition.new(vehicle, Vehicle.state_machine, :ignite, :parked, :idling)
     #   transition.after(true)
-    def after(result = nil)
+    def after(result = nil, success = true)
       @result = result
       
       catch(:halt) do
-        callback(:after)
+        unless @after_run
+          callback(:after, :success => success)
+          @after_run = true
+        end
       end
       
       true
@@ -326,7 +344,14 @@ module StateMachine
     #   transition.rollback
     #   vehicle.state             # => "parked"
     def rollback
-      machine.write(object, from)
+      reset
+      machine.write(object, :state, from)
+    end
+    
+    # Resets any tracking of which callbacks have already been run and whether
+    # the state has already been persisted
+    def reset
+      @before_run = @persisted = @after_run = false
     end
     
     # Generates a nicely formatted description of this transitions's contents.
@@ -358,7 +383,9 @@ module StateMachine
       # 
       # Additional callback parameters can be specified.  By default, this
       # transition is also passed into callbacks.
-      def callback(type)
+      def callback(type, context = {})
+        context = self.context.merge(context)
+        
         machine.callbacks[type].each do |callback|
           callback.call(object, context, self)
         end

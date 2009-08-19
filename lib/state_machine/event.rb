@@ -65,8 +65,8 @@ module StateMachine
     # state to be +idling+ if it's current state is +parked+ or +first_gear+
     # if it's current state is +idling+.
     # 
-    # To help defining these implicit transitions, a set of helpers are available
-    # for defining slightly more complex matching:
+    # To help define these implicit transitions, a set of helpers are available
+    # for slightly more complex matching:
     # * <tt>all</tt> - Matches every state in the machine
     # * <tt>all - [:parked, :idling, ...]</tt> - Matches every state except those specified
     # * <tt>any</tt> - An alias for +all+ (matches every state in the machine)
@@ -147,7 +147,7 @@ module StateMachine
       # requirements
       assert_valid_keys(options, :from, :to, :except_from, :if, :unless) if (options.keys - [:from, :to, :on, :except_from, :except_to, :except_on, :if, :unless]).empty?
       
-      guards << guard = Guard.new(options)
+      guards << guard = Guard.new(options.merge(:on => name))
       @known_states |= guard.known_states
       guard
     end
@@ -162,15 +162,16 @@ module StateMachine
     
     # Finds and builds the next transition that can be performed on the given
     # object.  If no transitions can be made, then this will return nil.
-    def transition_for(object)
-      from = machine.states.match(object).name
+    def transition_for(object, requirements = {})
+      requirements[:from] = machine.states.match!(object).name unless custom_from_state = requirements.include?(:from)
       
       guards.each do |guard|
-        if match = guard.match(object, :from => from)
+        if match = guard.match(object, requirements)
           # Guard allows for the transition to occur
+          from = requirements[:from]
           to = match[:to].values.empty? ? from : match[:to].values.first
           
-          return Transition.new(object, machine, name, from, to)
+          return Transition.new(object, machine, name, from, to, !custom_from_state)
         end
       end
       
@@ -190,7 +191,7 @@ module StateMachine
       if transition = transition_for(object)
         transition.perform(*args)
       else
-        machine.invalidate(object, machine.attribute, :invalid_transition, [[:event, name]])
+        machine.invalidate(object, :state, :invalid_transition, [[:event, name]])
         false
       end
     end
@@ -205,7 +206,7 @@ module StateMachine
       guards.collect {|guard| guard.draw(graph, name, valid_states)}.flatten
     end
     
-    # Generates a nicely formatted description of this events's contents.
+    # Generates a nicely formatted description of this event's contents.
     # 
     # For example,
     # 
@@ -244,7 +245,7 @@ module StateMachine
         
         # Fires the event, raising an exception if it fails
         machine.define_instance_method("#{qualified_name}!") do |machine, object, *args|
-          object.send(qualified_name, *args) || raise(StateMachine::InvalidTransition, "Cannot transition #{machine.attribute} via :#{name} from #{machine.states.match(object).name.inspect}")
+          object.send(qualified_name, *args) || raise(StateMachine::InvalidTransition, "Cannot transition #{machine.name} via :#{name} from #{machine.states.match!(object).name.inspect}")
         end
       end
   end

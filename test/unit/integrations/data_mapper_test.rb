@@ -25,7 +25,7 @@ begin
             storage_names[:default] = 'foo'
             def self.name; 'DataMapperTest::Foo'; end
             
-            property :id, Integer, :serial => true
+            property :id, DataMapper::Types::Serial
             property :state, String
             
             auto_migrate! if auto_migrate
@@ -74,7 +74,8 @@ begin
       def setup
         @resource = new_resource
         @machine = StateMachine::Machine.new(@resource)
-        @machine.state :parked, :idling, :first_gear
+        @machine.state :parked, :first_gear
+        @machine.state :idling, :value => lambda {'idling'}
       end
       
       def test_should_create_singular_with_scope
@@ -231,6 +232,57 @@ begin
       end
     end
     
+    class MachineWithOwnerSubclassTest < BaseTestCase
+      def setup
+        @resource = new_resource
+        @machine = StateMachine::Machine.new(@resource, :state)
+        
+        @subclass = Class.new(@resource)
+        @subclass_machine = @subclass.state_machine(:state) {}
+        @subclass_machine.state :parked, :idling, :first_gear
+      end
+      
+      def test_should_only_include_records_with_subclass_states_in_with_scope
+        parked = @subclass.create :state => 'parked'
+        idling = @subclass.create :state => 'idling'
+        
+        assert_equal [parked, idling], @subclass.with_states(:parked, :idling)
+      end
+      
+      def test_should_only_include_records_without_subclass_states_in_without_scope
+        parked = @subclass.create :state => 'parked'
+        idling = @subclass.create :state => 'idling'
+        first_gear = @subclass.create :state => 'first_gear'
+        
+        assert_equal [parked, idling], @subclass.without_states(:first_gear)
+      end
+    end
+    
+    class MachineWithTransactionsTest < BaseTestCase
+      def setup
+        @resource = new_resource
+        @machine = StateMachine::Machine.new(@resource, :use_transactions => true)
+      end
+      
+      def test_should_rollback_transaction_if_false
+        @machine.within_transaction(@resource.new) do
+          @resource.create
+          false
+        end
+        
+        assert_equal 0, @resource.all.size
+      end
+      
+      def test_should_not_rollback_transaction_if_true
+        @machine.within_transaction(@resource.new) do
+          @resource.create
+          true
+        end
+        
+        assert_equal 1, @resource.all.size
+      end
+    end
+    
     class MachineWithCallbacksTest < BaseTestCase
       def setup
         @resource = new_resource
@@ -320,6 +372,45 @@ begin
         @transition.perform
         
         assert_equal [1, 2, 3], @record.callback_result
+      end
+    end
+    
+    class MachineWithLoopbackTest < BaseTestCase
+      def setup
+        dirty_attributes = nil
+        
+        @resource = new_resource do
+          property :updated_at, DateTime
+          auto_migrate!
+          
+          # Simulate dm-timestamps
+          before :update do
+            dirty_attributes = self.dirty_attributes.dup
+            
+            return unless dirty?
+            self.updated_at = DateTime.now
+          end
+        end
+        
+        @machine = StateMachine::Machine.new(@resource, :initial => :parked)
+        @machine.event :park
+        
+        @record = @resource.create(:updated_at => Time.now - 1)
+        @timestamp = @record.updated_at
+        
+        @transition = StateMachine::Transition.new(@record, @machine, :park, :parked, :parked)
+        @transition.perform
+        
+        @dirty_attributes = dirty_attributes
+      end
+      
+      def test_should_include_state_in_dirty_attributes
+        expected = {@resource.properties[:state] => 'parked'}
+        assert_equal expected, @dirty_attributes
+      end
+      
+      def test_should_update_record
+        assert_not_equal @timestamp, @record.updated_at
       end
     end
     
@@ -543,6 +634,12 @@ begin
           assert_equal ['cannot transition via "park"'], @record.errors.on(:state)
         end
         
+        def test_should_auto_prefix_custom_attributes_on_invalidation
+          @machine.invalidate(@record, :event, :invalid)
+          
+          assert_equal ['is invalid'], @record.errors.on(:state_event)
+        end
+        
         def test_should_clear_errors_on_reset
           @record.state = 'parked'
           @record.errors.add(:state, 'is invalid')
@@ -562,6 +659,26 @@ begin
           
           assert !@record.valid?
           assert_equal ['is invalid'], @record.errors.on(:state)
+        end
+      end
+      
+      class MachineWithValidationsAndCustomAttributeTest < BaseTestCase
+        def setup
+          @resource = new_resource
+          @machine = StateMachine::Machine.new(@resource, :status, :attribute => :state)
+          @machine.state :parked
+          
+          @record = @resource.new
+        end
+        
+        def test_should_add_validation_errors_to_custom_attribute
+          @record.state = 'invalid'
+          
+          assert !@record.valid?
+          assert_equal ['is invalid'], @record.errors.on(:state)
+          
+          @record.state = 'parked'
+          assert @record.valid?
         end
       end
       
@@ -642,6 +759,109 @@ begin
           
           @record.valid?
           assert !ran_callback
+        end
+        
+        def test_should_not_run_after_callbacks_with_failures_disabled_if_validation_fails
+          @resource.class_eval do
+            attr_accessor :seatbelt
+            validates_present :seatbelt
+          end
+          
+          ran_callback = false
+          @machine.after_transition { ran_callback = true }
+          
+          @record.valid?
+          assert !ran_callback
+        end
+        
+        def test_should_run_after_callbacks_with_failures_enabled_if_validation_fails
+          @resource.class_eval do
+            attr_accessor :seatbelt
+            validates_present :seatbelt
+          end
+          
+          ran_callback = false
+          @machine.after_transition(:include_failures => true) { ran_callback = true }
+          
+          @record.valid?
+          assert ran_callback
+        end
+      end
+      
+      class MachineWithEventAttributesOnSaveTest < BaseTestCase
+        def setup
+          @resource = new_resource
+          @machine = StateMachine::Machine.new(@resource)
+          @machine.event :ignite do
+            transition :parked => :idling
+          end
+          
+          @record = @resource.new
+          @record.state = 'parked'
+          @record.state_event = 'ignite'
+        end
+        
+        def test_should_fail_if_event_is_invalid
+          @record.state_event = 'invalid'
+          assert !@record.save
+        end
+        
+        def test_should_fail_if_event_has_no_transition
+          @record.state = 'idling'
+          assert !@record.save
+        end
+        
+        def test_should_be_successful_if_event_has_transition
+          assert_equal true, @record.save
+        end
+        
+        def test_should_run_before_callbacks
+          ran_callback = false
+          @machine.before_transition { ran_callback = true }
+          
+          @record.save
+          assert ran_callback
+        end
+        
+        def test_should_run_before_callbacks_once
+          before_count = 0
+          @machine.before_transition { before_count += 1 }
+          
+          @record.save
+          assert_equal 1, before_count
+        end
+        
+        def test_should_persist_new_state
+          @record.save
+          assert_equal 'idling', @record.state
+        end
+        
+        def test_should_run_after_callbacks
+          ran_callback = false
+          @machine.after_transition { ran_callback = true }
+          
+          @record.save
+          assert ran_callback
+        end
+        
+        def test_should_not_run_after_callbacks_with_failures_disabled_if_fails
+          @resource.before(:create) { throw :halt }
+          
+          ran_callback = false
+          @machine.after_transition { ran_callback = true }
+          
+          @record.save
+          assert !ran_callback
+        end
+        
+        def test_should_run_after_callbacks_with_failures_enabled_if_fails
+          @resource.before(:create) { throw :halt }
+          
+          ran_callback = false
+          @machine.after_transition(:include_failures => true) { ran_callback = true }
+          
+          @record.save
+          assert ran_callback
         end
       end
       

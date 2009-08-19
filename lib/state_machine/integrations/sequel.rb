@@ -84,17 +84,14 @@ module StateMachine
     # you can build two state machines (one public and one protected) like so:
     # 
     #   class Vehicle < Sequel::Model
-    #     # Allow both machines to share the same state
-    #     alias_method :public_state, :state
-    #     alias_method :public_state=, :state=
-    #     
     #     set_restricted_columns :state_event # Prevent access to events in the first machine
     #     
     #     state_machine do
     #       # Define private events here
     #     end
     #     
-    #     state_machine :public_state do
+    #     # Allow both machines to share the same state
+    #     state_machine :public_state, :attribute => :state do
     #       # Define public events here
     #     end
     #   end
@@ -229,9 +226,18 @@ module StateMachine
         require 'sequel/extensions/inflector' if ::Sequel.const_defined?('VERSION') && ::Sequel::VERSION >= '2.12.0'
       end
       
+      # Forces the change in state to be recognized regardless of whether the
+      # state value actually changed
+      def write(object, attribute, value)
+        result = super
+        column = self.attribute.to_sym
+        object.changed_columns << column if attribute == :state && owner_class.columns.include?(column) && !object.changed_columns.include?(column)
+        result
+      end
+      
       # Adds a validation error to the given object
       def invalidate(object, attribute, message, values = [])
-        object.errors.add(attribute, generate_message(message, values))
+        object.errors.add(self.attribute(attribute), generate_message(message, values))
       end
       
       # Resets any errors previously added when invalidating the given object
@@ -240,11 +246,34 @@ module StateMachine
       end
       
       protected
+        # Defines an initialization hook into the owner class for setting the
+        # initial state of the machine *before* any attributes are set on the
+        # object
+        def define_state_initializer
+          @instance_helper_module.class_eval <<-end_eval, __FILE__, __LINE__
+            # Hooks in to attribute initialization to set the states *prior*
+            # to the attributes being set
+            def set(*args)
+              if new? && !@initialized_state_machines
+                @initialized_state_machines = true
+                
+                initialize_state_machines(:dynamic => false)
+                result = super
+                initialize_state_machines(:dynamic => true)
+                result
+              else
+                super
+              end
+            end
+          end_eval
+        end
+        
         # Skips defining reader/writer methods since this is done automatically
         def define_state_accessor
+          name = self.name
           owner_class.validates_each(attribute) do |record, attr, value|
-            machine = record.class.state_machine(attr)
-            machine.invalidate(record, attr, :invalid) unless machine.states.match(record)
+            machine = record.class.state_machine(name)
+            machine.invalidate(record, :state, :invalid) unless machine.states.match(record)
           end
         end
         

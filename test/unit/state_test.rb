@@ -223,11 +223,16 @@ class StateWithLambdaValueTest < Test::Unit::TestCase
     @klass = Class.new
     @args = nil
     @machine = StateMachine::Machine.new(@klass)
-    @state = StateMachine::State.new(@machine, :parked, :value => lambda {|*args| @args = args; :parked})
+    @value = lambda {|*args| @args = args; :parked}
+    @state = StateMachine::State.new(@machine, :parked, :value => @value)
   end
   
-  def test_should_use_evaluated_value
+  def test_should_use_evaluated_value_by_default
     assert_equal :parked, @state.value
+  end
+  
+  def test_should_allow_access_to_original_value
+    assert_equal @value, @state.value(false)
   end
   
   def test_should_include_masked_value_in_description
@@ -242,6 +247,62 @@ class StateWithLambdaValueTest < Test::Unit::TestCase
   def test_should_define_predicate
     object = @klass.new
     assert object.respond_to?(:parked?)
+  end
+  
+  def test_should_match_evaluated_value
+    assert @state.matches?(:parked)
+  end
+end
+
+class StateWithCachedLambdaValueTest < Test::Unit::TestCase
+  def setup
+    @klass = Class.new
+    @machine = StateMachine::Machine.new(@klass)
+    @dynamic_value = lambda {'value'}
+    @machine.states << @state = StateMachine::State.new(@machine, :parked, :value => @dynamic_value, :cache => true)
+  end
+  
+  def test_should_be_caching
+    assert @state.cache
+  end
+  
+  def test_should_evaluate_value
+    assert_equal 'value', @state.value
+  end
+  
+  def test_should_only_evaluate_value_once
+    value = @state.value
+    assert_same value, @state.value
+  end
+  
+  def test_should_update_value_index_for_state_collection
+    @state.value
+    assert_equal @state, @machine.states['value', :value]
+    assert_nil @machine.states[@dynamic_value, :value]
+  end
+end
+
+class StateWithoutCachedLambdaValueTest < Test::Unit::TestCase
+  def setup
+    @klass = Class.new
+    @machine = StateMachine::Machine.new(@klass)
+    @dynamic_value = lambda {'value'}
+    @machine.states << @state = StateMachine::State.new(@machine, :parked, :value => @dynamic_value)
+  end
+  
+  def test_should_not_be_caching
+    assert !@state.cache
+  end
+  
+  def test_should_evaluate_value_each_time
+    value = @state.value
+    assert_not_same value, @state.value
+  end
+  
+  def test_should_not_update_value_index_for_state_collection
+    @state.value
+    assert_nil @machine.states['value', :value]
+    assert_equal @state, @machine.states[@dynamic_value, :value]
   end
 end
 
@@ -567,7 +628,7 @@ class StateWithInvalidMethodCallTest < Test::Unit::TestCase
   
   def test_should_raise_an_exception
     exception = assert_raise(NoMethodError) { @state.call(@object, :invalid) }
-    assert_equal "undefined method 'invalid' for #{@object} in state nil", exception.message
+    assert_equal "undefined method 'invalid' for #{@object} with idling state", exception.message
   end
 end
 

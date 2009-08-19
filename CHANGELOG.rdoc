@@ -1,5 +1,37 @@
 == master
 
+== 0.8.0 / 2009-08-15
+
+* Add support for DataMapper 0.10.0
+* Always interpet nil return values from actions as failed attempts
+* Fix loopbacks not causing records to save in ORM integrations if no other fields were changed
+* Fix events not failing with useful errors when an object's state is invalid
+* Use more friendly NoMethodError messages for state-driven behaviors
+* Fix before_transition callbacks getting run twice when using event attributes in ORM integrations
+* Add the ability to query for the availability of specific transitions on an object
+* Allow after_transition callbacks to be explicitly run on failed attempts
+* By default, don't run after_transition callbacks on failed attempts
+* Fix not allowing multiple methods to be specified as arguments in callbacks
+* Fix initial states being set when loading records from the database in Sequel integration
+* Allow static initial states to be set earlier in the initialization of an object
+* Use friendly validation errors for nil states
+* Fix states not being validated properly when using custom names in ActiveRecord / DataMapper integrations
+
+== 0.7.6 / 2009-06-17
+
+* Allow multiple state machines on the same class to target the same attribute
+* Add support for :attribute to customize the attribute target, assuming the name is the first argument of #state_machine
+* Simplify reading from / writing to machine-related attributes on objects
+* Fix locale for ActiveRecord getting added to the i18n load path multiple times [Reiner Dieterich]
+* Fix callbacks, guards, and state-driven behaviors not always working on tainted classes [Brandon Dimcheff]
+* Use Ruby 1.9's built-in Object#instance_exec for bound callbacks when it's available
+* Improve performance of cached dynamic state lookups by 25%
+
+== 0.7.5 / 2009-05-25
+
+* Add built-in caching for dynamic state values when the value only needs to be generated once
+* Fix flawed example for using record ids as state values
+* Don't evaluate state values until they're actually used in an object instance
 * Make it easier to use event attributes for actions defined in the same class as the state machine
 * Fix #save/save! running transitions in ActiveRecord integrations even when a machine's action is not :save
 

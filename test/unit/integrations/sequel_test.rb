@@ -25,10 +25,10 @@ begin
           end if auto_migrate
           model = Class.new(Sequel::Model(:foo)) do
             self.raise_on_save_failure = false
-            plugin :validation_class_methods if respond_to?(:plugin)
-            
             def self.name; 'SequelTest::Foo'; end
           end
+          model.plugin(:validation_class_methods) if model.respond_to?(:plugin)
+          model.plugin(:hook_class_methods) if model.respond_to?(:plugin)
           model.class_eval(&block) if block_given?
           model
         end
@@ -63,7 +63,8 @@ begin
       def setup
         @model = new_model
         @machine = StateMachine::Machine.new(@model)
-        @machine.state :parked, :idling, :first_gear
+        @machine.state :parked, :first_gear
+        @machine.state :idling, :value => lambda {'idling'}
       end
       
       def test_should_create_singular_with_scope
@@ -145,6 +146,13 @@ begin
         assert_equal ['cannot transition via "park"'], record.errors.on(:state)
       end
       
+      def test_should_auto_prefix_custom_attributes_on_invalidation
+        record = @model.new
+        @machine.invalidate(record, :event, :invalid)
+        
+        assert_equal ['is invalid'], record.errors.on(:state_event)
+      end
+      
       def test_should_clear_errors_on_reset
         record = @model.new
         record.state = 'parked'
@@ -177,15 +185,136 @@ begin
       end
     end
     
-    class MachineWithInitialStateTest < BaseTestCase
+    class MachineWithStaticInitialStateTest < BaseTestCase
       def setup
-        @model = new_model
-        @machine = StateMachine::Machine.new(@model, :initial => 'parked')
-        @record = @model.new
+        @model = new_model do
+          attr_accessor :value
+        end
+        @machine = StateMachine::Machine.new(@model, :initial => :parked)
       end
       
       def test_should_set_initial_state_on_created_object
-        assert_equal 'parked', @record.state
+        record = @model.new
+        assert_equal 'parked', record.state
+      end
+      
+      def test_should_still_set_attributes
+        record = @model.new(:value => 1)
+        assert_equal 1, record.value
+      end
+      
+      def test_should_still_allow_initialize_blocks
+        block_args = nil
+        record = @model.new do |*args|
+          block_args = args
+        end
+        
+        assert_equal [record], block_args
+      end
+      
+      def test_should_not_have_any_changed_columns
+        record = @model.new
+        assert record.changed_columns.empty?
+      end
+      
+      def test_should_set_attributes_prior_to_after_initialize_hook
+        state = nil
+        @model.class_eval do
+          define_method(:after_initialize) do
+            state = self.state
+          end
+        end
+        @model.new
+        assert_equal 'parked', state
+      end
+      
+      def test_should_set_initial_state_before_setting_attributes
+        @model.class_eval do
+          attr_accessor :state_during_setter
+          
+          define_method(:value=) do |value|
+            self.state_during_setter = state
+          end
+        end
+        
+        record = @model.new(:value => 1)
+        assert_equal 'parked', record.state_during_setter
+      end
+      
+      def test_should_not_set_initial_state_after_already_initialized
+        record = @model.new(:value => 1)
+        assert_equal 'parked', record.state
+        
+        record.state = 'idling'
+        record.set({})
+        assert_equal 'idling', record.state
+      end
+    end
+    
+    class MachineWithDynamicInitialStateTest < BaseTestCase
+      def setup
+        @model = new_model do
+          attr_accessor :value
+        end
+        @machine = StateMachine::Machine.new(@model, :initial => lambda {|object| :parked})
+        @machine.state :parked
+      end
+      
+      def test_should_set_initial_state_on_created_object
+        record = @model.new
+        assert_equal 'parked', record.state
+      end
+      
+      def test_should_still_set_attributes
+        record = @model.new(:value => 1)
+        assert_equal 1, record.value
+      end
+      
+      def test_should_still_allow_initialize_blocks
+        block_args = nil
+        record = @model.new do |*args|
+          block_args = args
+        end
+        
+        assert_equal [record], block_args
+      end
+      
+      def test_should_not_have_any_changed_columns
+        record = @model.new
+        assert record.changed_columns.empty?
+      end
+      
+      def test_should_set_attributes_prior_to_after_initialize_hook
+        state = nil
+        @model.class_eval do
+          define_method(:after_initialize) do
+            state = self.state
+          end
+        end
+        @model.new
+        assert_equal 'parked', state
+      end
+      
+      def test_should_set_initial_state_after_setting_attributes
+        @model.class_eval do
+          attr_accessor :state_during_setter
+          
+          define_method(:value=) do |value|
+            self.state_during_setter = state || 'nil'
+          end
+        end
+        
+        record = @model.new(:value => 1)
+        assert_equal 'nil', record.state_during_setter
+      end
+      
+      def test_should_not_set_initial_state_after_already_initialized
+        record = @model.new(:value => 1)
+        assert_equal 'parked', record.state
+        
+        record.state = 'idling'
+        record.set({})
+        assert_equal 'idling', record.state
       end
     end
     
@@ -241,6 +370,56 @@ begin
       
       def test_should_create_plural_with_scope
         assert @model.respond_to?(:with_statuses)
+      end
+    end
+    
+    class MachineWithOwnerSubclassTest < BaseTestCase
+      def setup
+        @model = new_model
+        @machine = StateMachine::Machine.new(@model, :state)
+        
+        @subclass = Class.new(@model)
+        @subclass_machine = @subclass.state_machine(:state) {}
+        @subclass_machine.state :parked, :idling, :first_gear
+      end
+      
+      def test_should_only_include_records_with_subclass_states_in_with_scope
+        parked = @subclass.create :state => 'parked'
+        idling = @subclass.create :state => 'idling'
+        
+        assert_equal [parked, idling], @subclass.with_states(:parked, :idling).all
+      end
+      
+      def test_should_only_include_records_without_subclass_states_in_without_scope
+        parked = @subclass.create :state => 'parked'
+        idling = @subclass.create :state => 'idling'
+        first_gear = @subclass.create :state => 'first_gear'
+        
+        assert_equal [parked, idling], @subclass.without_states(:first_gear).all
+      end
+    end
+    
+    class MachineWithCustomAttributeTest < BaseTestCase
+      def setup
+        @model = new_model do
+          alias_method :vehicle_status, :state
+          alias_method :vehicle_status=, :state=
+        end
+        
+        @machine = StateMachine::Machine.new(@model, :status, :attribute => :vehicle_status)
+        @machine.state :parked
+        
+        @record = @model.new
+      end
+      
+      def test_should_add_validation_errors_to_custom_attribute
+        @record.vehicle_status = 'invalid'
+        
+        assert !@record.valid?
+        assert_equal ['is invalid'], @record.errors.on(:vehicle_status)
+        
+        @record.vehicle_status = 'parked'
+        assert @record.valid?
       end
     end
     
@@ -333,6 +512,46 @@ begin
         @transition.perform
         
         assert_equal [1, 2, 3], @record.callback_result
+      end
+    end
+    
+    class MachineWithLoopbackTest < BaseTestCase
+      def setup
+        changed_columns = nil
+        
+        @model = new_model do
+          # Simulate timestamps plugin
+          define_method(:before_update) do
+            changed_columns = self.changed_columns.dup
+            
+            super()
+            self.updated_at = Time.now if changed_columns.any?
+          end
+        end
+        
+        DB.alter_table :foo do
+          add_column :updated_at, :datetime
+        end
+        @model.class_eval { get_db_schema(true) }
+        
+        @machine = StateMachine::Machine.new(@model, :initial => :parked)
+        @machine.event :park
+        
+        @record = @model.create(:updated_at => Time.now - 1)
+        @timestamp = @record.updated_at
+        
+        @transition = StateMachine::Transition.new(@record, @machine, :park, :parked, :parked)
+        @transition.perform
+        
+        @changed_columns = changed_columns
+      end
+      
+      def test_should_include_state_in_changed_columns
+        assert_equal [:state], @changed_columns
+      end
+      
+      def test_should_update_record
+        assert_not_equal @timestamp, @record.updated_at
       end
     end
     
@@ -436,6 +655,109 @@ begin
         
         @record.valid?
         assert !ran_callback
+      end
+      
+      def test_should_not_run_after_callbacks_with_failures_disabled_if_validation_fails
+        @model.class_eval do
+          attr_accessor :seatbelt
+          validates_presence_of :seatbelt
+        end
+        
+        ran_callback = false
+        @machine.after_transition { ran_callback = true }
+        
+        @record.valid?
+        assert !ran_callback
+      end
+      
+      def test_should_run_after_callbacks_with_failures_enabled_if_validation_fails
+        @model.class_eval do
+          attr_accessor :seatbelt
+          validates_presence_of :seatbelt
+        end
+        
+        ran_callback = false
+        @machine.after_transition(:include_failures => true) { ran_callback = true }
+        
+        @record.valid?
+        assert ran_callback
+      end
+    end
+    
+    class MachineWithEventAttributesOnSaveTest < BaseTestCase
+      def setup
+        @model = new_model
+        @machine = StateMachine::Machine.new(@model)
+        @machine.event :ignite do
+          transition :parked => :idling
+        end
+        
+        @record = @model.new
+        @record.state = 'parked'
+        @record.state_event = 'ignite'
+      end
+      
+      def test_should_fail_if_event_is_invalid
+        @record.state_event = 'invalid'
+        assert !@record.save
+      end
+      
+      def test_should_fail_if_event_has_no_transition
+        @record.state = 'idling'
+        assert !@record.save
+      end
+      
+      def test_should_be_successful_if_event_has_transition
+        assert @record.save
+      end
+      
+      def test_should_run_before_callbacks
+        ran_callback = false
+        @machine.before_transition { ran_callback = true }
+        
+        @record.save
+        assert ran_callback
+      end
+      
+      def test_should_run_before_callbacks_once
+        before_count = 0
+        @machine.before_transition { before_count += 1 }
+        
+        @record.save
+        assert_equal 1, before_count
+      end
+      
+      def test_should_persist_new_state
+        @record.save
+        assert_equal 'idling', @record.state
+      end
+      
+      def test_should_run_after_callbacks
+        ran_callback = false
+        @machine.after_transition { ran_callback = true }
+        
+        @record.save
+        assert ran_callback
+      end
+      
+      def test_should_not_run_after_callbacks_with_failures_disabled_if_fails
+        @model.before_create {|record| false}
+        
+        ran_callback = false
+        @machine.after_transition { ran_callback = true }
+        
+        @record.save
+        assert !ran_callback
+      end
+      
+      def test_should_run_after_callbacks_with_failures_enabled_if_fails
+        @model.before_create {|record| false}
+        
+        ran_callback = false
+        @machine.after_transition(:include_failures => true) { ran_callback = true }
+        
+        @record.save
+        assert ran_callback
       end
     end
     

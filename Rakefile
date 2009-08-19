@@ -5,7 +5,7 @@ require 'rake/contrib/sshpublisher'
 
 spec = Gem::Specification.new do |s|
   s.name              = 'state_machine'
-  s.version           = '0.7.4'
+  s.version           = '0.8.0'
   s.platform          = Gem::Platform::RUBY
   s.summary           = 'Adds support for creating state machines for attributes on any Ruby class'
   s.description       = s.summary
@@ -53,7 +53,14 @@ Rake::RDocTask.new(:rdoc) do |rdoc|
   rdoc.options << '--line-numbers' << '--inline-source'
   rdoc.rdoc_files.include('README.rdoc', 'CHANGELOG.rdoc', 'LICENSE', 'lib/**/*.rb')
 end
-  
+
+desc 'Generate a gemspec file.'
+task :gemspec do
+  File.open("#{spec.name}.gemspec", 'w') do |f|
+    f.write spec.to_ruby
+  end
+end
+
 Rake::GemPackageTask.new(spec) do |p|
   p.gem_spec = spec
   p.need_tar = true

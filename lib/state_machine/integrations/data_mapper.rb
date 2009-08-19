@@ -94,16 +94,13 @@ module StateMachine
     #     include DataMapper::Resource
     #     ...
     #     
-    #     # Allow both machines to share the same state
-    #     alias_method :public_state, :state
-    #     alias_method :public_state=, :state=
-    #     
     #     state_machine do
     #       # Define private events here
     #     end
     #     protected :state_event= # Prevent access to events in the first machine
     #     
-    #     state_machine :public_state do
+    #     # Allow both machines to share the same state
+    #     state_machine :public_state, :attribute => :state do
     #       # Define public events here
     #     end
     #   end
@@ -112,7 +109,7 @@ module StateMachine
     # 
     # By default, the use of transactions during an event transition is
     # turned off to be consistent with DataMapper.  This means that if
-    # changes are made to the database during a before callback, but the the
+    # changes are made to the database during a before callback, but the
     # transition fails to complete, those changes will *not* be rolled back.
     # 
     # For example,
@@ -250,17 +247,32 @@ module StateMachine
       
       # Loads additional files specific to DataMapper
       def self.extended(base) #:nodoc:
+        require 'dm-core/version' unless ::DataMapper.const_defined?('VERSION')
         require 'state_machine/integrations/data_mapper/observer' if ::DataMapper.const_defined?('Observer')
+      end
+      
+      # Forces the change in state to be recognized regardless of whether the
+      # state value actually changed
+      def write(object, attribute, value)
+        result = super
+        if attribute == :state && owner_class.properties.detect {|property| property.name == self.attribute}
+          if ::DataMapper::VERSION =~ /^(0\.\d\.)/ # Match anything < 0.10
+            object.original_values[self.attribute] = "#{value}-ignored"
+          else
+            object.original_attributes[owner_class.properties[self.attribute]] = "#{value}-ignored"
+          end
+        end
+        result
       end
       
       # Adds a validation error to the given object
       def invalidate(object, attribute, message, values = [])
-        object.errors.add(attribute, generate_message(message, values)) if supports_validations?
+        object.errors.add(self.attribute(attribute), generate_message(message, values)) if supports_validations?
       end
       
       # Resets any errors previously added when invalidating the given object
       def reset(object)
-        object.errors.clear if object.respond_to?(:errors)
+        object.errors.clear if supports_validations?
       end
       
       protected
@@ -271,12 +283,12 @@ module StateMachine
         
         # Skips defining reader/writer methods since this is done automatically
         def define_state_accessor
-          owner_class.property(attribute, String) unless owner_class.properties.has_property?(attribute)
+          owner_class.property(attribute, String) unless owner_class.properties.detect {|property| property.name == attribute}
           
           if supports_validations?
-            attribute = self.attribute
+            name = self.name
             owner_class.validates_with_block(attribute) do
-              machine = self.class.state_machine(attribute)
+              machine = self.class.state_machine(name)
               machine.states.match(self) ? true : [false, machine.generate_message(:invalid)]
             end
           end
