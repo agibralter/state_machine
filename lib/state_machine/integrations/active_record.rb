@@ -330,13 +330,21 @@ module StateMachine
             
             # Hooks in to attribute initialization to set the states *prior*
             # to the attributes being set
-            def attributes=(*args)
+            def attributes=(new_attributes, *args)
               if new_record? && !@initialized_state_machines
                 @initialized_state_machines = true
                 
-                initialize_state_machines(:dynamic => false)
+                if new_attributes
+                  attributes = new_attributes.dup
+                  attributes.stringify_keys!
+                  ignore = remove_attributes_protected_from_mass_assignment(attributes).keys
+                else
+                  ignore = []
+                end
+                
+                initialize_state_machines(:dynamic => false, :ignore => ignore)
                 super
-                initialize_state_machines(:dynamic => true)
+                initialize_state_machines(:dynamic => true, :ignore => ignore)
               else
                 super
               end
@@ -424,16 +432,18 @@ module StateMachine
         # state names can be translated to their associated values and so that
         # inheritance is respected properly.
         def define_scope(name, scope)
-          name = name.to_sym
-          machine_name = self.name
-          
-          # Create the scope and then override it with state translation
-          owner_class.named_scope(name)
-          owner_class.scopes[name] = lambda do |klass, *states|
-            machine_states = klass.state_machine(machine_name).states
-            values = states.flatten.map {|state| machine_states.fetch(state).value}
+          if owner_class.respond_to?(:named_scope)
+            name = name.to_sym
+            machine_name = self.name
             
-            ::ActiveRecord::NamedScope::Scope.new(klass, scope.call(values))
+            # Create the scope and then override it with state translation
+            owner_class.named_scope(name)
+            owner_class.scopes[name] = lambda do |klass, *states|
+              machine_states = klass.state_machine(machine_name).states
+              values = states.flatten.map {|state| machine_states.fetch(state).value}
+              
+              ::ActiveRecord::NamedScope::Scope.new(klass, scope.call(values))
+            end
           end
           
           # Prevent the Machine class from wrapping the scope

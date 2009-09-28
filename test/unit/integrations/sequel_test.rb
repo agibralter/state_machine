@@ -318,11 +318,30 @@ begin
       end
     end
     
+    class MachineWithColumnDefaultTest < BaseTestCase
+      def setup
+        @model = new_model
+        DB.alter_table :foo do
+          add_column :status, :string, :default => 'idling'
+        end
+        @model.class_eval { get_db_schema(true) }
+        
+        @machine = StateMachine::Machine.new(@model, :status, :initial => :parked)
+        @record = @model.new
+      end
+      
+      def test_should_use_machine_default
+        assert_equal 'parked', @record.status
+      end
+    end
+    
     class MachineWithNonColumnStateAttributeUndefinedTest < BaseTestCase
       def setup
         @model = new_model do
           def initialize
             # Skip attribute initialization
+            @initialized_state_machines = true
+            super
           end
         end
         
@@ -420,6 +439,46 @@ begin
         
         @record.vehicle_status = 'parked'
         assert @record.valid?
+      end
+    end
+    
+    class MachineWithInitializedStateTest < BaseTestCase
+      def setup
+        @model = new_model
+        @machine = StateMachine::Machine.new(@model, :initial => :parked)
+        @machine.state nil, :idling
+      end
+      
+      def test_should_allow_nil_initial_state_when_static
+        record = @model.new(:state => nil)
+        assert_nil record.state
+      end
+      
+      def test_should_allow_nil_initial_state_when_dynamic
+        @machine.initial_state = lambda {:parked}
+        record = @model.new(:state => nil)
+        assert_nil record.state
+      end
+      
+      def test_should_allow_different_initial_state_when_static
+        record = @model.new(:state => 'idling')
+        assert_equal 'idling', record.state
+      end
+      
+      def test_should_allow_different_initial_state_when_dynamic
+        @machine.initial_state = lambda {:parked}
+        record = @model.new(:state => 'idling')
+        assert_equal 'idling', record.state
+      end
+      
+      def test_should_use_default_state_if_protected
+        @model.class_eval do
+          self.strict_param_setting = false
+          set_restricted_columns :state
+        end
+        
+        record = @model.new(:state => 'idling')
+        assert_equal 'parked', record.state
       end
     end
     

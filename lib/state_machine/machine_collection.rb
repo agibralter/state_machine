@@ -5,10 +5,14 @@ module StateMachine
     # values are only set if the machine's attribute doesn't already exist
     # (which must mean the defaults are being skipped)
     def initialize_states(object, options = {})
+      if ignore = options[:ignore]
+        ignore.map! {|attribute| attribute.to_sym}
+      end
+      
       each_value do |machine|
-        if !options.include?(:dynamic) || machine.dynamic_initial_state? == options[:dynamic]
+        if (!ignore || !ignore.include?(machine.attribute)) && (!options.include?(:dynamic) || machine.dynamic_initial_state? == options[:dynamic])
           value = machine.read(object, :state)
-          machine.write(object, :state, machine.initial_state(object).value) if value.nil? || value.respond_to?(:empty?) && value.empty?
+          machine.write(object, :state, machine.initial_state(object).value) if ignore || value.nil? || value.respond_to?(:empty?) && value.empty?
         end
       end
     end
@@ -117,28 +121,31 @@ module StateMachine
       
       # Make sure all events were valid
       if result = transitions.all? {|transition| transition != false}
+        # Clear any traces of the event since transitions are available and to
+        # prevent from being evaluated multiple times if actions are nested
+        transitions.each do |transition|
+          transition.machine.write(object, :event, nil)
+          transition.machine.write(object, :event_transition, nil)
+        end
+        
+        # Perform the transitions
         begin
-          result = Transition.perform(transitions, :after => complete) do
-            # Prevent events from being evaluated multiple times if actions are nested
-            transitions.each {|transition| transition.machine.write(object, :event, nil)}
-            action_value = yield
-          end
+          result = Transition.perform(transitions, :after => complete) { action_value = yield }
         rescue Exception
-          # Revert object modifications
+          # Reset the event attribute so it can be re-evaluated if attempted again
           transitions.each do |transition|
             transition.machine.write(object, :event, transition.event)
-            transition.machine.write(object, :event_transition, nil) if complete
           end
           
           raise
         end
         
         transitions.each do |transition|
-          # Revert event unless transition was successful
-          transition.machine.write(object, :event, transition.event) unless complete && result
+          # Revert event if failed (to allow for more attempts)
+          transition.machine.write(object, :event, transition.event) unless result
           
-          # Track transition if partial transition completed successfully
-          transition.machine.write(object, :event_transition, !complete && result ? transition : nil)
+          # Track transition if partial transition was successful
+          transition.machine.write(object, :event_transition, transition) if !complete && result
         end
       end
       
